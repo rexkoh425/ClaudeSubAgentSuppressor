@@ -18,6 +18,7 @@ export const PLUGIN_NAME = 'subagent-budget-guard';
 export const DEFAULT_CONFIG = Object.freeze({
   max_concurrent_subagents: 0,
   max_subagent_tokens_per_session: 0,
+  subagent_token_warning_threshold_percent: 95,
   session_five_hour_budget_percent: 25,
   absolute_five_hour_ceiling_percent: 95,
   enforcement_enabled: true
@@ -78,6 +79,10 @@ export function loadConfig(env = process.env) {
     100,
     config.absolute_five_hour_ceiling_percent
   );
+  config.subagent_token_warning_threshold_percent = Math.min(
+    100,
+    Math.max(1, config.subagent_token_warning_threshold_percent)
+  );
 
   return config;
 }
@@ -125,6 +130,9 @@ function initialState(sessionId) {
       verifiedTokens: 0,
       totalDurationMs: 0,
       totalToolUseCount: 0,
+      tokenBudgetWarnings: 0,
+      tokenBudgetExceeded: false,
+      lastTokenBudgetNoticeAt: null,
       runs: []
     },
     agentTeam: {
@@ -191,7 +199,23 @@ async function acquireLock(sessionId, env, timeoutMs = 3000) {
 }
 
 async function readState(sessionId, env) {
-  return readJson(stateFile(sessionId, env), initialState(sessionId));
+  return normalizeState(await readJson(stateFile(sessionId, env), initialState(sessionId)), sessionId);
+}
+
+function normalizeState(state, sessionId) {
+  const fresh = initialState(sessionId);
+  state.subagents = { ...fresh.subagents, ...(state.subagents || {}) };
+  state.agentTeam = { ...fresh.agentTeam, ...(state.agentTeam || {}) };
+  state.rateLimits = {
+    ...fresh.rateLimits,
+    ...(state.rateLimits || {}),
+    fiveHour: {
+      ...fresh.rateLimits.fiveHour,
+      ...(state.rateLimits?.fiveHour || {})
+    }
+  };
+  state.events = Array.isArray(state.events) ? state.events : [];
+  return state;
 }
 
 async function updateState(sessionId, env, updater) {
@@ -298,11 +322,61 @@ function fiveHourBudgetDecision(state, config) {
   return null;
 }
 
+function formatCount(value) {
+  return Number(value || 0).toLocaleString('en-US');
+}
+
+function subagentTokenBudgetStatus(state, config) {
+  const limit = config.max_subagent_tokens_per_session;
+  if (!limit || limit <= 0) return null;
+
+  const used = Number(state.subagents.verifiedTokens || 0);
+  const percent = limit > 0 ? (used / limit) * 100 : 0;
+  const warningThreshold = config.subagent_token_warning_threshold_percent;
+
+  return {
+    used,
+    limit,
+    percent,
+    warningThreshold,
+    warningTokens: Math.ceil((limit * warningThreshold) / 100),
+    atWarning: percent >= warningThreshold,
+    atCap: used >= limit
+  };
+}
+
+function subagentTokenBudgetDecision(state, config, { includeWarning = true } = {}) {
+  if (!config.enforcement_enabled) return null;
+  const status = subagentTokenBudgetStatus(state, config);
+  if (!status) return null;
+
+  if (status.atCap) {
+    return {
+      severity: 'cap',
+      status,
+      reason: `Verified subagent token cap reached: ${formatCount(status.used)}/${formatCount(status.limit)} tokens (${status.percent.toFixed(1)}%). Stop using subagents and ask the user before continuing.`
+    };
+  }
+
+  if (includeWarning && status.atWarning) {
+    return {
+      severity: 'warning',
+      status,
+      reason: `Verified subagent token usage reached ${status.percent.toFixed(1)}% of the configured cap (${formatCount(status.used)}/${formatCount(status.limit)} tokens; warning threshold ${status.warningThreshold}%). Stop using subagents and ask the user before continuing.`
+    };
+  }
+
+  return null;
+}
+
 function agentDenyReason(state, config) {
   if (!config.enforcement_enabled) return null;
 
   const budgetReason = fiveHourBudgetDecision(state, config);
   if (budgetReason) return budgetReason;
+
+  const tokenBudgetReason = subagentTokenBudgetDecision(state, config);
+  if (tokenBudgetReason) return tokenBudgetReason.reason;
 
   if (config.max_concurrent_subagents === 0) {
     return 'Subagent launch denied: max_concurrent_subagents is 0.';
@@ -310,13 +384,6 @@ function agentDenyReason(state, config) {
 
   if (state.subagents.active >= config.max_concurrent_subagents) {
     return `Subagent launch denied: max_concurrent_subagents ${config.max_concurrent_subagents} already reached.`;
-  }
-
-  if (
-    config.max_subagent_tokens_per_session > 0 &&
-    state.subagents.verifiedTokens >= config.max_subagent_tokens_per_session
-  ) {
-    return `Subagent launch denied: verified subagent tokens ${state.subagents.verifiedTokens} reached max_subagent_tokens_per_session ${config.max_subagent_tokens_per_session}.`;
   }
 
   return null;
@@ -377,11 +444,13 @@ function usageTotal(usage = {}) {
 
 export async function handlePostToolUseAgent(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
+  const config = loadConfig(env);
   const response = input?.tool_response || {};
   const status = response.status || 'unknown';
   const totalTokens =
     numberOrNull(response.totalTokens) ?? usageTotal(response.usage || {});
   const verified = status === 'completed' && totalTokens > 0;
+  let tokenBudgetNotice = null;
 
   await updateState(sessionId, env, (state) => {
     const run = {
@@ -409,6 +478,14 @@ export async function handlePostToolUseAgent(input, env = process.env) {
       state.subagents.verifiedTokens += totalTokens;
       state.subagents.totalDurationMs += run.totalDurationMs;
       state.subagents.totalToolUseCount += run.totalToolUseCount;
+      tokenBudgetNotice = subagentTokenBudgetDecision(state, config);
+      if (tokenBudgetNotice) {
+        state.subagents.tokenBudgetWarnings += 1;
+        state.subagents.lastTokenBudgetNoticeAt = nowIso();
+        if (tokenBudgetNotice.severity === 'cap') {
+          state.subagents.tokenBudgetExceeded = true;
+        }
+      }
     } else if (status === 'async_launched') {
       state.subagents.backgroundLaunched += 1;
     }
@@ -420,8 +497,21 @@ export async function handlePostToolUseAgent(input, env = process.env) {
       verified,
       totalTokens: run.totalTokens
     });
+    if (tokenBudgetNotice) {
+      pushEvent(state, {
+        type: 'subagent-token-budget-notice',
+        severity: tokenBudgetNotice.severity,
+        used: tokenBudgetNotice.status.used,
+        limit: tokenBudgetNotice.status.limit,
+        percent: tokenBudgetNotice.status.percent
+      });
+    }
     return state;
   });
+
+  if (tokenBudgetNotice) {
+    return { exitCode: 2, stdout: null, stderr: tokenBudgetNotice.reason };
+  }
 
   return { exitCode: 0, stdout: null, stderr: '' };
 }
@@ -530,7 +620,10 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const config = loadConfig(env);
   const state = await readState(sessionId, env);
-  const reason = fiveHourBudgetDecision(state, config);
+  const tokenBudgetReason = subagentTokenBudgetDecision(state, config, {
+    includeWarning: false
+  });
+  const reason = tokenBudgetReason?.reason || fiveHourBudgetDecision(state, config);
 
   if (!reason) {
     return { exitCode: 0, stdout: null, stderr: '' };
@@ -588,6 +681,7 @@ export async function buildReport(sessionId, env = process.env) {
     fiveHour.latestUsedPercentage !== null && fiveHour.baselineUsedPercentage !== null
       ? Math.max(0, fiveHour.latestUsedPercentage - fiveHour.baselineUsedPercentage)
       : null;
+  const tokenBudget = subagentTokenBudgetStatus(state, config);
 
   return {
     plugin: PLUGIN_NAME,
@@ -596,6 +690,9 @@ export async function buildReport(sessionId, env = process.env) {
     state,
     summary: {
       verifiedTokenLabel: `${state.subagents.verifiedTokens.toLocaleString('en-US')} verified tokens`,
+      subagentTokenBudget: tokenBudget
+        ? `${formatCount(tokenBudget.used)}/${formatCount(tokenBudget.limit)} verified tokens (${tokenBudget.percent.toFixed(1)}%)`
+        : 'no verified-token cap',
       activeSubagents: `${state.subagents.active}/${config.max_concurrent_subagents}`,
       fiveHourBudget:
         consumed === null
@@ -614,6 +711,7 @@ export function formatReport(report) {
     `Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'}`,
     `Subagents: allowed ${state.subagents.allowed}, denied ${state.subagents.denied}, active ${state.subagents.active}, lifecycle starts ${state.subagents.lifecycleStarted}, lifecycle stops ${state.subagents.lifecycleStopped}`,
     `Verified usage: ${summary.verifiedTokenLabel}, ${state.subagents.totalToolUseCount} subagent tool calls, ${state.subagents.totalDurationMs} ms`,
+    `Subagent token budget: ${summary.subagentTokenBudget}`,
     `Background launches: ${state.subagents.backgroundLaunched} lifecycle-counted, token totals pending`,
     `Agent-team tasks: created ${state.agentTeam.created}, denied ${state.agentTeam.denied}, completed ${state.agentTeam.completed}`,
     `5-hour budget: ${summary.fiveHourBudget}`
@@ -751,8 +849,8 @@ export async function renderStatusLine(input, {
 
   const guardSegment =
     fiveHour.latestUsedPercentage === null
-      ? `SBG agents ${report.state.subagents.active}/${report.config.max_concurrent_subagents} | 5h unknown`
-      : `SBG agents ${report.state.subagents.active}/${report.config.max_concurrent_subagents} | 5h ${fiveHour.latestUsedPercentage.toFixed(1)}%`;
+      ? `SBG agents ${report.state.subagents.active}/${report.config.max_concurrent_subagents} | tokens ${report.summary.subagentTokenBudget} | 5h unknown`
+      : `SBG agents ${report.state.subagents.active}/${report.config.max_concurrent_subagents} | tokens ${report.summary.subagentTokenBudget} | 5h ${fiveHour.latestUsedPercentage.toFixed(1)}%`;
 
   return previous ? `${previous} | ${guardSegment}` : guardSegment;
 }

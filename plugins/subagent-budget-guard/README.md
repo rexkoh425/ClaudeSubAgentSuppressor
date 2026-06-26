@@ -44,3 +44,5 @@ node bin/verify.js --offline
 ```
 
 The plugin is strict by default: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised.
+
+`max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `95`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.

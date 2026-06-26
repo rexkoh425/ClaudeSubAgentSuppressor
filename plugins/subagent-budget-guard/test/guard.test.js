@@ -156,6 +156,103 @@ test('PostToolUse Agent records verified subagent tokens and metadata', async ()
   });
 });
 
+test('PostToolUse Agent asks Claude to stop when subagent token usage reaches warning threshold', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+
+    const result = await handlePostToolUseAgent(
+      {
+        session_id: 'session-token-warning',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Large analysis', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-warning',
+          resolvedModel: 'claude-sonnet-4-5',
+          totalTokens: 950,
+          totalDurationMs: 1200,
+          totalToolUseCount: 2
+        }
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /95\.0%/);
+    assert.match(result.stderr, /stop using subagents/i);
+
+    const report = await buildReport('session-token-warning', env);
+    assert.equal(report.state.subagents.verifiedTokens, 950);
+    assert.equal(report.state.subagents.tokenBudgetWarnings, 1);
+    assert.equal(report.summary.subagentTokenBudget, '950/1,000 verified tokens (95.0%)');
+  });
+});
+
+test('PreToolUse Agent blocks new subagents after token warning threshold is reached', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-token-pretool',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Large analysis', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-warning',
+          totalTokens: 950
+        }
+      },
+      env
+    );
+
+    const result = await handlePreToolUseAgent(agentInput('session-token-pretool'), env);
+
+    assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /95\.0%.*warning threshold/i
+    );
+  });
+});
+
+test('UserPromptSubmit blocks when subagent token cap is reached', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
+
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-token-cap',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Huge analysis', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-cap',
+          totalTokens: 1001
+        }
+      },
+      env
+    );
+
+    const result = await handleUserPromptSubmit(
+      {
+        session_id: 'session-token-cap',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'continue'
+      },
+      env
+    );
+
+    assert.equal(result.stdout.decision, 'block');
+    assert.match(result.stdout.reason, /verified subagent token cap reached/i);
+  });
+});
+
 test('PostToolUse Agent marks background launches as lifecycle-counted but not token-verified', async () => {
   await withTempEnv(async (env) => {
     await handlePostToolUseAgent(

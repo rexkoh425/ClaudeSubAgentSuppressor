@@ -7,6 +7,7 @@ Marketplace-ready Claude Code plugin that hard-denies subagents by default, reco
 - Blocks new `Agent` tool subagents before they run.
 - Records agent-team task creation and completion events.
 - Records verified subagent token totals from completed `Agent` tool responses.
+- Warns Claude to stop using subagents when verified subagent token usage reaches the configured warning threshold.
 - Cross-checks actual subagent lifecycle events with `SubagentStart` and `SubagentStop`.
 - Captures Claude Code `rate_limits.five_hour.used_percentage` through a one-time statusLine bridge.
 - Blocks new prompts once the configured session budget or absolute 5-hour ceiling is reached.
@@ -79,10 +80,13 @@ Claude Code prompts for these `userConfig` values when the plugin is enabled. De
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `max_concurrent_subagents` | `0` | Blocks all concurrent subagents unless raised. |
-| `max_subagent_tokens_per_session` | `0` | No verified-token cap when set to `0`; otherwise caps verified subagent tokens. |
+| `max_subagent_tokens_per_session` | `0` | No verified-token cap when set to `0`; otherwise caps verified subagent tokens after each completed subagent. |
+| `subagent_token_warning_threshold_percent` | `95` | At this percentage of `max_subagent_tokens_per_session`, the plugin tells Claude to stop using subagents and blocks future subagent launches. |
 | `session_five_hour_budget_percent` | `25` | Max percentage points this session may consume after the bridge records a baseline. |
 | `absolute_five_hour_ceiling_percent` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |
 | `enforcement_enabled` | `true` | Set false to record without blocking. |
+
+Claude Code reports `Agent.totalTokens` after an `Agent` call completes, so token enforcement is based on verified completed subagent runs. The plugin cannot interrupt a still-running subagent mid-token because Claude Code does not expose a live per-token subagent stream to hooks.
 
 ## Usage
 
