@@ -32,12 +32,12 @@ This is the install path anyone can use today because the repository is public.
 
 ## NPM Availability
 
-The plugin package is npm-ready under `plugins/subagent-budget-guard` with package name `subagent-budget-guard`.
+The plugin package is npm-ready under `plugins/subagent-budget-guard` with package name `@rex_koh/subagent-budget-guard`.
 
 Claude Code installs plugins from marketplaces. Npm can be used as a plugin source inside a marketplace entry, or users can install the helper CLIs directly after the package is published:
 
 ```powershell
-npm install -g subagent-budget-guard
+npm install -g @rex_koh/subagent-budget-guard
 subagent-budget-guard-verify --offline
 ```
 

@@ -22,12 +22,12 @@ Run after install:
 
 ## NPM Package
 
-This package is npm-ready as `subagent-budget-guard`.
+This package is npm-ready as `@rex_koh/subagent-budget-guard`.
 
 Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a plugin source in a marketplace entry or for installing the helper CLIs:
 
 ```bash
-npm install -g subagent-budget-guard
+npm install -g @rex_koh/subagent-budget-guard
 subagent-budget-guard-verify --offline
 ```
 

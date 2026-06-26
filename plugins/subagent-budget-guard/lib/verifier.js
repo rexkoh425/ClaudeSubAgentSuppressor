@@ -20,8 +20,31 @@ async function readJson(filePath) {
   return JSON.parse(text.replace(/^\uFEFF/, ''));
 }
 
-function pluginRoot(repoRoot) {
-  return path.join(repoRoot, 'plugins', 'subagent-budget-guard');
+async function resolveLayout(repoRoot) {
+  const packagePluginRoot = repoRoot;
+  const marketplacePluginRoot = path.join(repoRoot, 'plugins', 'subagent-budget-guard');
+
+  if (await pathExists(path.join(repoRoot, '.claude-plugin', 'marketplace.json'))) {
+    return {
+      repoRoot,
+      pluginRoot: marketplacePluginRoot,
+      hasMarketplace: true
+    };
+  }
+
+  if (await pathExists(path.join(packagePluginRoot, '.claude-plugin', 'plugin.json'))) {
+    return {
+      repoRoot,
+      pluginRoot: packagePluginRoot,
+      hasMarketplace: false
+    };
+  }
+
+  return {
+    repoRoot,
+    pluginRoot: marketplacePluginRoot,
+    hasMarketplace: false
+  };
 }
 
 async function withCheck(result, name, fn) {
@@ -48,18 +71,36 @@ export async function runOfflineVerification({
     checks: [],
     failures: []
   };
-  const root = pluginRoot(repoRoot);
+  const layout = await resolveLayout(repoRoot);
+  const root = layout.pluginRoot;
 
-  await withCheck(result, 'marketplace-manifest', async () => {
-    const marketplacePath = path.join(repoRoot, '.claude-plugin', 'marketplace.json');
-    const marketplace = await readJson(marketplacePath);
-    assert(marketplace.name === 'subagent-budget-tools', 'marketplace name mismatch');
-    assert(Array.isArray(marketplace.plugins), 'marketplace.plugins must be an array');
-    const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-budget-guard');
-    assert(entry, 'subagent-budget-guard entry missing');
-    assert(entry.source === './plugins/subagent-budget-guard', 'marketplace source mismatch');
-    return marketplacePath;
-  });
+  if (layout.hasMarketplace) {
+    await withCheck(result, 'marketplace-manifest', async () => {
+      const marketplacePath = path.join(repoRoot, '.claude-plugin', 'marketplace.json');
+      const marketplace = await readJson(marketplacePath);
+      assert(marketplace.name === 'subagent-budget-tools', 'marketplace name mismatch');
+      assert(Array.isArray(marketplace.plugins), 'marketplace.plugins must be an array');
+      const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-budget-guard');
+      assert(entry, 'subagent-budget-guard entry missing');
+      assert(entry.source?.source === 'npm', 'marketplace source must use npm');
+      assert(
+        entry.source?.package === '@rex_koh/subagent-budget-guard',
+        'marketplace npm package mismatch'
+      );
+      assert(entry.source?.version === '0.1.1', 'marketplace npm version mismatch');
+      return marketplacePath;
+    });
+  } else {
+    await withCheck(result, 'package-root', async () => {
+      const packageJsonPath = path.join(root, 'package.json');
+      const packageJson = await readJson(packageJsonPath);
+      assert(
+        packageJson.name === '@rex_koh/subagent-budget-guard',
+        'package root name mismatch'
+      );
+      return packageJsonPath;
+    });
+  }
 
   await withCheck(result, 'plugin-manifest-user-config', async () => {
     const manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
@@ -298,7 +339,8 @@ export async function runLiveVerification({
   result.checks.push(...offline.checks);
   result.failures.push(...offline.failures);
 
-  const root = pluginRoot(repoRoot);
+  const layout = await resolveLayout(repoRoot);
+  const root = layout.pluginRoot;
   const hasClaude = await commandExists('claude');
   if (!hasClaude) {
     result.warnings.push('claude executable was not found on PATH; skipped claude plugin validate and install-state checks.');
