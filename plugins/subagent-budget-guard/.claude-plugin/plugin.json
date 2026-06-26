@@ -2,7 +2,7 @@
   "name": "subagent-budget-guard",
   "displayName": "Subagent Budget Guard",
   "description": "Hard-deny subagent launches, record verified subagent usage, and enforce a session budget against Claude Code's 5-hour rate-limit percentage.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "author": {
     "name": "ClaudeSubAgentSuppressor"
   },
@@ -13,57 +13,5 @@
     "rate-limit",
     "tokens",
     "hooks"
-  ],
-  "userConfig": {
-    "max_concurrent_subagents": {
-      "type": "number",
-      "title": "Max concurrent subagents",
-      "description": "Maximum simultaneously active subagents. The default 0 blocks all new subagents.",
-      "default": 0,
-      "min": 0,
-      "required": false
-    },
-    "max_subagent_tokens_per_session": {
-      "type": "number",
-      "title": "Max verified subagent tokens per session",
-      "description": "Maximum verified subagent tokens allowed in one session. Set 0 for no token cap.",
-      "default": 0,
-      "min": 0,
-      "required": false
-    },
-    "subagent_token_warning_threshold_percent": {
-      "type": "number",
-      "title": "Subagent token warning threshold percent",
-      "description": "Warn Claude to stop using subagents once verified subagent token usage reaches this percentage of max_subagent_tokens_per_session.",
-      "default": 95,
-      "min": 1,
-      "max": 100,
-      "required": false
-    },
-    "session_five_hour_budget_percent": {
-      "type": "number",
-      "title": "Session 5-hour budget percent",
-      "description": "Maximum percentage points of the current 5-hour Claude Code limit this session may consume after the statusLine bridge records its baseline.",
-      "default": 25,
-      "min": 0,
-      "max": 100,
-      "required": false
-    },
-    "absolute_five_hour_ceiling_percent": {
-      "type": "number",
-      "title": "Absolute 5-hour ceiling percent",
-      "description": "Block new prompts once Claude Code reports this absolute 5-hour usage percentage, regardless of this session's baseline.",
-      "default": 95,
-      "min": 0,
-      "max": 100,
-      "required": false
-    },
-    "enforcement_enabled": {
-      "type": "boolean",
-      "title": "Enable enforcement",
-      "description": "When true, hooks deny over-budget subagents and prompts. When false, the plugin records usage without blocking.",
-      "default": true,
-      "required": false
-    }
-  }
+  ]
 }

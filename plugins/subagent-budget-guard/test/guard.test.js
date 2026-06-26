@@ -69,16 +69,46 @@ test('loadConfig uses strict deny-by-default limits', () => {
   assert.equal(config.enforcement_enabled, true);
 });
 
-test('plugin manifest userConfig does not require install-time config flags', async () => {
+test('plugin manifest omits userConfig so install does not ask for config flags', async () => {
   const manifestPath = path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  for (const key of Object.keys(DEFAULT_CONFIG)) {
-    assert.notEqual(
-      manifest.userConfig[key].required,
-      true,
-      `${key} should be configurable by setup, not required at install time`
+  assert.equal(manifest.userConfig, undefined);
+});
+
+test('loadConfig reads setup options from Claude settings', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  try {
+    const claudeDir = path.join(homeDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'subagent-budget-guard@subagent-budget-tools': {
+            options: {
+              max_concurrent_subagents: 2,
+              max_subagent_tokens_per_session: 50000,
+              subagent_token_warning_threshold_percent: 90,
+              session_five_hour_budget_percent: 15,
+              absolute_five_hour_ceiling_percent: 88,
+              enforcement_enabled: false
+            }
+          }
+        }
+      })
     );
+
+    const config = loadConfig({ USERPROFILE: homeDir });
+
+    assert.equal(config.max_concurrent_subagents, 2);
+    assert.equal(config.max_subagent_tokens_per_session, 50000);
+    assert.equal(config.subagent_token_warning_threshold_percent, 90);
+    assert.equal(config.session_five_hour_budget_percent, 15);
+    assert.equal(config.absolute_five_hour_ceiling_percent, 88);
+    assert.equal(config.enforcement_enabled, false);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
   }
 });
 

@@ -94,7 +94,7 @@ For existing installs, setup removes obsolete `max_subagents_per_session` and `m
 
 ## Configuration
 
-Claude Code exposes these `userConfig` values. Install-time manifest defaults remain strict; `/subagent-budget-guard:setup` applies the recommended working preset.
+The plugin reads these settings from `~/.claude/settings.json` under `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`. Runtime defaults remain strict until `/subagent-budget-guard:setup` applies the recommended working preset.
 
 | Key | Manifest default | Setup value | Meaning |
 | --- | ---: | ---: | --- |

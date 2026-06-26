@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, readFileSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -74,18 +74,40 @@ function envValue(env, key) {
   return env[exact] ?? env[upper];
 }
 
-export function loadConfig(env = process.env) {
-  const config = { ...DEFAULT_CONFIG };
+function settingsPathForEnv(env) {
+  const homeDir = env.USERPROFILE || env.HOME;
+  if (!homeDir && env !== process.env) return null;
+  return path.join(homeDir || os.homedir(), '.claude', 'settings.json');
+}
 
+function readSettingsOptions(env) {
+  const settingsPath = settingsPathForEnv(env);
+  if (!settingsPath) return {};
+
+  try {
+    const text = readFileSync(settingsPath, 'utf8');
+    const settings = JSON.parse(text.replace(/^\uFEFF/, ''));
+    const options = settings?.pluginConfigs?.[PLUGIN_ID]?.options;
+    return isPlainObject(options) ? options : {};
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  }
+}
+
+function applyConfigValues(config, valueForKey) {
   for (const key of CONFIG_KEYS) {
-    const value = envValue(env, key);
+    const value = valueForKey(key);
     if (NUMBER_KEYS.has(key)) {
-      config[key] = Math.max(0, asNumber(value, DEFAULT_CONFIG[key]));
+      config[key] = Math.max(0, asNumber(value, config[key]));
     } else if (typeof DEFAULT_CONFIG[key] === 'boolean') {
-      config[key] = asBoolean(value, DEFAULT_CONFIG[key]);
+      config[key] = asBoolean(value, config[key]);
     }
   }
+}
 
+function normalizeConfig(config) {
   config.session_five_hour_budget_percent = Math.min(
     100,
     config.session_five_hour_budget_percent
@@ -100,6 +122,16 @@ export function loadConfig(env = process.env) {
   );
 
   return config;
+}
+
+export function loadConfig(env = process.env) {
+  const config = { ...DEFAULT_CONFIG };
+  const settingsOptions = readSettingsOptions(env);
+
+  applyConfigValues(config, (key) => settingsOptions[key]);
+  applyConfigValues(config, (key) => envValue(env, key));
+
+  return normalizeConfig(config);
 }
 
 export function getHomeDir(env = process.env) {

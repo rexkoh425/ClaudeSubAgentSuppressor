@@ -90,7 +90,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.5', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.1.6', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -105,7 +105,7 @@ export async function runOfflineVerification({
     });
   }
 
-  await withCheck(result, 'plugin-manifest-user-config', async () => {
+  await withCheck(result, 'plugin-manifest-no-install-config', async () => {
     const manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
     const manifest = await readJson(manifestPath);
     assert(manifest.name === 'subagent-budget-guard', 'plugin name mismatch');
@@ -117,13 +117,10 @@ export async function runOfflineVerification({
       manifest.skills === undefined,
       'manifest.skills must be omitted for default skills/ scanning to avoid duplicate loading'
     );
-    for (const key of CONFIG_KEYS) {
-      assert(manifest.userConfig?.[key], `missing userConfig.${key}`);
-      assert(
-        manifest.userConfig[key].required !== true,
-        `userConfig.${key} must not be required at install time`
-      );
-    }
+    assert(
+      manifest.userConfig === undefined,
+      'manifest.userConfig must be omitted so installs do not ask for --config flags'
+    );
     return manifestPath;
   });
 
