@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   DEFAULT_CONFIG,
@@ -22,6 +24,8 @@ import {
 } from '../lib/guard.js';
 
 import { runOfflineVerification } from '../lib/verifier.js';
+
+const execFileAsync = promisify(execFile);
 
 async function withTempEnv(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sbg-test-'));
@@ -553,4 +557,91 @@ test('offline verifier validates plugin shape and simulated enforcement', async 
     assert.ok(result.checks.some((check) => check.name === 'statusline-budget-blocks'));
     assert.ok(result.checks.some((check) => check.name === 'setup-applies-plugin-config'));
   });
+});
+
+test('offline verifier ignores real Claude settings from caller environment', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-real-home-'));
+  try {
+    const claudeDir = path.join(homeDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'subagent-budget-guard@subagent-budget-tools': {
+            options: {
+              max_concurrent_subagents: 1,
+              max_subagent_tokens_per_session: 100000,
+              enforcement_enabled: true
+            }
+          }
+        }
+      })
+    );
+
+    const result = await runOfflineVerification({
+      repoRoot: path.resolve('.'),
+      env: {
+        ...process.env,
+        USERPROFILE: homeDir,
+        HOME: homeDir
+      }
+    });
+
+    assert.equal(result.ok, true, result.failures.join('\n'));
+    assert.equal(result.failures.length, 0);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('setup CLI applies custom config values over recommended defaults', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+        '--config',
+        'max_concurrent_subagents=3',
+        '--config',
+        'max_subagent_tokens_per_session=250000',
+        '--config',
+        'subagent_token_warning_threshold_percent=80',
+        '--config',
+        'session_five_hour_budget_percent=10',
+        '--config',
+        'absolute_five_hour_ceiling_percent=90',
+        '--config',
+        'enforcement_enabled=false'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    const options =
+      settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'].options;
+
+    assert.equal(options.max_concurrent_subagents, 3);
+    assert.equal(options.max_subagent_tokens_per_session, 250000);
+    assert.equal(options.subagent_token_warning_threshold_percent, 80);
+    assert.equal(options.session_five_hour_budget_percent, 10);
+    assert.equal(options.absolute_five_hour_ceiling_percent, 90);
+    assert.equal(options.enforcement_enabled, false);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });

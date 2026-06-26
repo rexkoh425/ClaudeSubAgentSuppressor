@@ -134,6 +134,12 @@ export function loadConfig(env = process.env) {
   return normalizeConfig(config);
 }
 
+export function buildSetupConfig(overrides = {}) {
+  const config = { ...SETUP_CONFIG };
+  applyConfigValues(config, (key) => overrides[key]);
+  return normalizeConfig(config);
+}
+
 export function getHomeDir(env = process.env) {
   return env.USERPROFILE || env.HOME || os.homedir();
 }
@@ -823,13 +829,14 @@ function applySetupPluginConfig(
     ? currentEntry.options
     : {};
   const nextOptions = { ...currentOptions };
+  const normalizedSetupConfig = buildSetupConfig(setupConfig);
 
   for (const key of REMOVED_CONFIG_KEYS) {
     delete nextOptions[key];
   }
 
   for (const key of CONFIG_KEYS) {
-    nextOptions[key] = setupConfig[key];
+    nextOptions[key] = normalizedSetupConfig[key];
   }
 
   settings.pluginConfigs[pluginId] = {
@@ -843,7 +850,8 @@ function applySetupPluginConfig(
 export async function installStatusLineBridge({
   homeDir = getHomeDir(),
   pluginRoot = getPluginRoot(),
-  pluginData = getDataDir()
+  pluginData = getDataDir(),
+  setupConfig = SETUP_CONFIG
 } = {}) {
   await mkdir(pluginData, { recursive: true });
   const { settingsPath, settings } = await ensureSettings(homeDir);
@@ -861,7 +869,7 @@ export async function installStatusLineBridge({
     padding: existing?.padding ?? previousStatusLine?.padding ?? 0,
     refreshInterval: existing?.refreshInterval ?? 5
   };
-  const pluginConfigOptions = applySetupPluginConfig(settings);
+  const pluginConfigOptions = applySetupPluginConfig(settings, { setupConfig });
 
   settings.statusLine = nextStatusLine;
   await writeJsonAtomic(settingsPath, settings);

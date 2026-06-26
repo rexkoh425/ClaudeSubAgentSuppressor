@@ -93,6 +93,24 @@ enforcement_enabled=true
 
 For existing installs, setup removes obsolete `max_subagents_per_session` and `max_agent_team_tasks_per_session` options from this plugin's config.
 
+The setup skill can also ask for custom values. Choose custom setup when prompted, or run the helper CLI directly:
+
+```powershell
+subagent-budget-guard-setup --interactive
+```
+
+Non-interactive custom setup is also supported:
+
+```powershell
+subagent-budget-guard-setup `
+  --config max_concurrent_subagents=2 `
+  --config max_subagent_tokens_per_session=250000 `
+  --config subagent_token_warning_threshold_percent=90 `
+  --config session_five_hour_budget_percent=15 `
+  --config absolute_five_hour_ceiling_percent=95 `
+  --config enforcement_enabled=true
+```
+
 ## Configuration
 
 The plugin reads these settings from `~/.claude/settings.json` under `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`. Runtime defaults remain strict until `/subagent-budget-guard:setup` applies the recommended working preset.

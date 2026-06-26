@@ -64,6 +64,27 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function withIsolatedPluginEnv(env, root, fn) {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-data-'));
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-home-'));
+  const checkEnv = {
+    PATH: env.PATH,
+    Path: env.Path,
+    SystemRoot: env.SystemRoot,
+    USERPROFILE: homeDir,
+    HOME: homeDir,
+    CLAUDE_PLUGIN_DATA: dataDir,
+    CLAUDE_PLUGIN_ROOT: root
+  };
+
+  try {
+    return await fn(checkEnv, { dataDir, homeDir });
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+}
+
 export async function runOfflineVerification({
   repoRoot = process.cwd(),
   env = process.env
@@ -90,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.7', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.1.8', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -164,13 +185,7 @@ export async function runOfflineVerification({
   });
 
   await withCheck(result, 'pretool-agent-denies-default', async () => {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-'));
-    try {
-      const checkEnv = {
-        ...env,
-        CLAUDE_PLUGIN_DATA: dataDir,
-        CLAUDE_PLUGIN_ROOT: root
-      };
+    return withIsolatedPluginEnv(env, root, async (checkEnv) => {
       const output = await handlePreToolUseAgent(
         {
           session_id: 'offline-pretool',
@@ -185,19 +200,11 @@ export async function runOfflineVerification({
         'Agent launch was not denied by default'
       );
       return output.stdout.hookSpecificOutput.permissionDecisionReason;
-    } finally {
-      await rm(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   await withCheck(result, 'posttool-agent-records-verified-tokens', async () => {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-'));
-    try {
-      const checkEnv = {
-        ...env,
-        CLAUDE_PLUGIN_DATA: dataDir,
-        CLAUDE_PLUGIN_ROOT: root
-      };
+    return withIsolatedPluginEnv(env, root, async (checkEnv) => {
       await handlePostToolUseAgent(
         {
           session_id: 'offline-posttool',
@@ -217,18 +224,13 @@ export async function runOfflineVerification({
       const report = await buildReport('offline-posttool', checkEnv);
       assert(report.state.subagents.verifiedTokens === 101, 'verified token count mismatch');
       return report.summary.verifiedTokenLabel;
-    } finally {
-      await rm(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   await withCheck(result, 'statusline-budget-blocks', async () => {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-'));
-    try {
+    return withIsolatedPluginEnv(env, root, async (baseEnv) => {
       const checkEnv = {
-        ...env,
-        CLAUDE_PLUGIN_DATA: dataDir,
-        CLAUDE_PLUGIN_ROOT: root,
+        ...baseEnv,
         CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent: '3'
       };
       await updateRateLimitFromStatusLine(
@@ -255,9 +257,7 @@ export async function runOfflineVerification({
       );
       assert(output.stdout?.decision === 'block', 'prompt was not blocked');
       return output.stdout.reason;
-    } finally {
-      await rm(dataDir, { recursive: true, force: true });
-    }
+    });
   });
 
   await withCheck(result, 'statusline-setup-wraps-existing-command', async () => {

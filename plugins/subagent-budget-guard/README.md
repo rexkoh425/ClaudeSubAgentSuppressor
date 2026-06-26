@@ -57,4 +57,22 @@ enforcement_enabled=true
 
 For existing installs, setup also removes obsolete `max_subagents_per_session` and `max_agent_team_tasks_per_session` options from this plugin's Claude settings.
 
+The setup skill can also ask for custom values. For direct terminal setup, use:
+
+```bash
+subagent-budget-guard-setup --interactive
+```
+
+Or pass explicit values:
+
+```bash
+subagent-budget-guard-setup \
+  --config max_concurrent_subagents=2 \
+  --config max_subagent_tokens_per_session=250000 \
+  --config subagent_token_warning_threshold_percent=90 \
+  --config session_five_hour_budget_percent=15 \
+  --config absolute_five_hour_ceiling_percent=95 \
+  --config enforcement_enabled=true
+```
+
 `max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `95`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.
