@@ -2,12 +2,39 @@
 
 Claude Code plugin that blocks subagents by default, records verified subagent usage, and enforces a session budget against Claude Code's 5-hour usage percentage.
 
+## Install
+
+Recommended Claude Code install:
+
+```text
+/plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
+/plugin install subagent-budget-guard@subagent-budget-tools
+/reload-plugins
+```
+
 Run after install:
 
 ```text
 /subagent-budget-guard:setup
 /subagent-budget-guard:verify
 /subagent-budget-guard:report
+```
+
+## NPM Package
+
+This package is npm-ready as `subagent-budget-guard`.
+
+Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a plugin source in a marketplace entry or for installing the helper CLIs:
+
+```bash
+npm install -g subagent-budget-guard
+subagent-budget-guard-verify --offline
+```
+
+Maintainer publish command:
+
+```bash
+npm publish --access public
 ```
 
 Offline verification:

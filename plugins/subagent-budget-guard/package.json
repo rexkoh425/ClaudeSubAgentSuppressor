@@ -1,11 +1,51 @@
 {
   "name": "subagent-budget-guard",
   "version": "0.1.0",
-  "private": true,
+  "description": "Claude Code plugin that blocks subagents by default, records verified subagent usage, and enforces 5-hour usage budgets.",
+  "license": "MIT",
+  "author": "ClaudeSubAgentSuppressor",
+  "homepage": "https://github.com/rexkoh425/ClaudeSubAgentSuppressor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/rexkoh425/ClaudeSubAgentSuppressor.git",
+    "directory": "plugins/subagent-budget-guard"
+  },
+  "bugs": {
+    "url": "https://github.com/rexkoh425/ClaudeSubAgentSuppressor/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-plugin",
+    "subagents",
+    "budget",
+    "tokens",
+    "rate-limit"
+  ],
   "type": "module",
+  "files": [
+    ".claude-plugin/",
+    "hooks/",
+    "skills/",
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "subagent-budget-guard-report": "bin/report.js",
+    "subagent-budget-guard-setup": "bin/setup.js",
+    "subagent-budget-guard-verify": "bin/verify.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "verify:offline": "node bin/verify.js --offline",
-    "verify:live": "node bin/verify.js --live"
+    "verify:live": "node bin/verify.js --live",
+    "prepack": "node --check bin/hook.js && node --check bin/statusline.js && node --check bin/setup.js && node --check bin/report.js && node --check bin/verify.js && node --check lib/guard.js && node --check lib/verifier.js"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
