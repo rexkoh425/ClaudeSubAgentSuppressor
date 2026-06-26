@@ -90,7 +90,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.4', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.1.5', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -119,6 +119,10 @@ export async function runOfflineVerification({
     );
     for (const key of CONFIG_KEYS) {
       assert(manifest.userConfig?.[key], `missing userConfig.${key}`);
+      assert(
+        manifest.userConfig[key].required !== true,
+        `userConfig.${key} must not be required at install time`
+      );
     }
     return manifestPath;
   });

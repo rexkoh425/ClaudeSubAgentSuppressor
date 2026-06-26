@@ -69,6 +69,19 @@ test('loadConfig uses strict deny-by-default limits', () => {
   assert.equal(config.enforcement_enabled, true);
 });
 
+test('plugin manifest userConfig does not require install-time config flags', async () => {
+  const manifestPath = path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    assert.notEqual(
+      manifest.userConfig[key].required,
+      true,
+      `${key} should be configurable by setup, not required at install time`
+    );
+  }
+});
+
 test('PreToolUse Agent denies subagent launches by default', async () => {
   await withTempEnv(async (env) => {
     const result = await handlePreToolUseAgent(agentInput(), env);
