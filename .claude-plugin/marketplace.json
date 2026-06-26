@@ -1,7 +1,7 @@
 {
   "name": "subagent-budget-tools",
   "description": "Marketplace for Claude Code plugins that enforce agent and usage budgets.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "owner": {
     "name": "ClaudeSubAgentSuppressor"
   },
@@ -10,11 +10,11 @@
       "name": "agent-guard",
       "displayName": "Agent Guard",
       "description": "Hard-deny subagent launches, track verified subagent usage, and enforce a session budget against Claude Code's 5-hour rate limit.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": {
         "source": "npm",
         "package": "@rex_koh/subagent-budget-guard",
-        "version": "0.2.0"
+        "version": "0.2.1"
       },
       "category": "productivity",
       "keywords": [

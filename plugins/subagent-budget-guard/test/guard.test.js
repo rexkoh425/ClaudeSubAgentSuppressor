@@ -297,7 +297,7 @@ test('PreToolUse Agent blocks new subagents after token warning threshold is rea
   });
 });
 
-test('UserPromptSubmit blocks when subagent token cap is reached', async () => {
+test('UserPromptSubmit allows normal prompts when subagent token cap is reached', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
 
@@ -325,8 +325,8 @@ test('UserPromptSubmit blocks when subagent token cap is reached', async () => {
       env
     );
 
-    assert.equal(result.stdout.decision, 'block');
-    assert.match(result.stdout.reason, /verified subagent token cap reached/i);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, null);
   });
 });
 

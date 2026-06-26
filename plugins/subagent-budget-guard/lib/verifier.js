@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.2.0', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.2.1', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {

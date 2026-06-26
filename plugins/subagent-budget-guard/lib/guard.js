@@ -676,10 +676,7 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const config = loadConfig(env);
   const state = await readState(sessionId, env);
-  const tokenBudgetReason = subagentTokenBudgetDecision(state, config, {
-    includeWarning: false
-  });
-  const reason = tokenBudgetReason?.reason || fiveHourBudgetDecision(state, config);
+  const reason = fiveHourBudgetDecision(state, config);
 
   if (!reason) {
     return { exitCode: 0, stdout: null, stderr: '' };
