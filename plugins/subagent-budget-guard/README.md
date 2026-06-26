@@ -43,4 +43,4 @@ Offline verification:
 node bin/verify.js --offline
 ```
 
-The plugin is strict by default: `max_subagents_per_session`, `max_concurrent_subagents`, and `max_agent_team_tasks_per_session` all default to `0`.
+The plugin is strict by default: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised.

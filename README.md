@@ -5,7 +5,7 @@ Marketplace-ready Claude Code plugin that hard-denies subagents by default, reco
 ## What It Does
 
 - Blocks new `Agent` tool subagents before they run.
-- Suppresses agent-team task creation by default.
+- Records agent-team task creation and completion events.
 - Records verified subagent token totals from completed `Agent` tool responses.
 - Cross-checks actual subagent lifecycle events with `SubagentStart` and `SubagentStop`.
 - Captures Claude Code `rate_limits.five_hour.used_percentage` through a one-time statusLine bridge.
@@ -78,9 +78,7 @@ Claude Code prompts for these `userConfig` values when the plugin is enabled. De
 
 | Key | Default | Meaning |
 | --- | ---: | --- |
-| `max_subagents_per_session` | `0` | Blocks all normal subagents unless raised. |
 | `max_concurrent_subagents` | `0` | Blocks all concurrent subagents unless raised. |
-| `max_agent_team_tasks_per_session` | `0` | Suppresses agent-team task creation unless raised. |
 | `max_subagent_tokens_per_session` | `0` | No verified-token cap when set to `0`; otherwise caps verified subagent tokens. |
 | `session_five_hour_budget_percent` | `25` | Max percentage points this session may consume after the bridge records a baseline. |
 | `absolute_five_hour_ceiling_percent` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |

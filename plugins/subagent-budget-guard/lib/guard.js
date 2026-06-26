@@ -16,9 +16,7 @@ import path from 'node:path';
 export const PLUGIN_NAME = 'subagent-budget-guard';
 
 export const DEFAULT_CONFIG = Object.freeze({
-  max_subagents_per_session: 0,
   max_concurrent_subagents: 0,
-  max_agent_team_tasks_per_session: 0,
   max_subagent_tokens_per_session: 0,
   session_five_hour_budget_percent: 25,
   absolute_five_hour_ceiling_percent: 95,
@@ -306,14 +304,6 @@ function agentDenyReason(state, config) {
   const budgetReason = fiveHourBudgetDecision(state, config);
   if (budgetReason) return budgetReason;
 
-  if (config.max_subagents_per_session === 0) {
-    return 'Subagent launch denied: max_subagents_per_session is 0.';
-  }
-
-  if (state.subagents.allowed >= config.max_subagents_per_session) {
-    return `Subagent launch denied: max_subagents_per_session ${config.max_subagents_per_session} already reached.`;
-  }
-
   if (config.max_concurrent_subagents === 0) {
     return 'Subagent launch denied: max_concurrent_subagents is 0.';
   }
@@ -474,14 +464,6 @@ function taskDenyReason(state, config) {
   const budgetReason = fiveHourBudgetDecision(state, config);
   if (budgetReason) return budgetReason;
 
-  if (config.max_agent_team_tasks_per_session === 0) {
-    return 'Agent-team task denied: max_agent_team_tasks_per_session is 0.';
-  }
-
-  if (state.agentTeam.created >= config.max_agent_team_tasks_per_session) {
-    return `Agent-team task denied: max_agent_team_tasks_per_session ${config.max_agent_team_tasks_per_session} already reached.`;
-  }
-
   return null;
 }
 
@@ -614,9 +596,7 @@ export async function buildReport(sessionId, env = process.env) {
     state,
     summary: {
       verifiedTokenLabel: `${state.subagents.verifiedTokens.toLocaleString('en-US')} verified tokens`,
-      subagentLaunches: `${state.subagents.allowed}/${config.max_subagents_per_session}`,
       activeSubagents: `${state.subagents.active}/${config.max_concurrent_subagents}`,
-      agentTeamTasks: `${state.agentTeam.created}/${config.max_agent_team_tasks_per_session}`,
       fiveHourBudget:
         consumed === null
           ? '5-hour usage unavailable'

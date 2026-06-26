@@ -55,7 +55,8 @@ test('loadConfig uses strict deny-by-default limits', () => {
   const config = loadConfig({});
 
   assert.deepEqual(config, DEFAULT_CONFIG);
-  assert.equal(config.max_subagents_per_session, 0);
+  assert.equal('max_subagents_per_session' in config, false);
+  assert.equal('max_agent_team_tasks_per_session' in config, false);
   assert.equal(config.max_concurrent_subagents, 0);
   assert.equal(config.enforcement_enabled, true);
 });
@@ -68,14 +69,13 @@ test('PreToolUse Agent denies subagent launches by default', async () => {
     assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(
       result.stdout.hookSpecificOutput.permissionDecisionReason,
-      /max_subagents_per_session is 0/
+      /max_concurrent_subagents is 0/
     );
   });
 });
 
-test('PreToolUse Agent allows when configured session and concurrent limits remain', async () => {
+test('PreToolUse Agent allows when configured concurrent limit remains', async () => {
   await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_max_subagents_per_session = '2';
     env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
 
     const result = await handlePreToolUseAgent(agentInput(), env);
@@ -239,7 +239,7 @@ test('rate-limit baseline resets when the five-hour window rolls over', async ()
   });
 });
 
-test('TaskCreated suppresses agent-team tasks by default', async () => {
+test('TaskCreated records agent-team tasks without count-based suppression', async () => {
   await withTempEnv(async (env) => {
     const result = await handleTaskCreated(
       {
@@ -251,16 +251,16 @@ test('TaskCreated suppresses agent-team tasks by default', async () => {
       env
     );
 
-    assert.equal(result.exitCode, 2);
-    assert.match(result.stderr, /max_agent_team_tasks_per_session is 0/);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, '');
     const report = await buildReport('session-task', env);
-    assert.equal(report.state.agentTeam.denied, 1);
+    assert.equal(report.state.agentTeam.created, 1);
+    assert.equal(report.state.agentTeam.denied, 0);
   });
 });
 
 test('TaskCompleted records task completions when completion hook fires', async () => {
   await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_max_agent_team_tasks_per_session = '1';
     await handleTaskCreated(
       {
         session_id: 'session-task-complete',

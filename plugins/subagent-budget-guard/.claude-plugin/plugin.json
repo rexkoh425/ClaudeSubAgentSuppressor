@@ -2,7 +2,7 @@
   "name": "subagent-budget-guard",
   "displayName": "Subagent Budget Guard",
   "description": "Hard-deny subagent launches, record verified subagent usage, and enforce a session budget against Claude Code's 5-hour rate-limit percentage.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "ClaudeSubAgentSuppressor"
   },
@@ -15,26 +15,10 @@
     "hooks"
   ],
   "userConfig": {
-    "max_subagents_per_session": {
-      "type": "number",
-      "title": "Max subagents per session",
-      "description": "Maximum normal Agent tool subagents allowed in one Claude Code session. The default 0 blocks all new subagents.",
-      "default": 0,
-      "min": 0,
-      "required": true
-    },
     "max_concurrent_subagents": {
       "type": "number",
       "title": "Max concurrent subagents",
       "description": "Maximum simultaneously active subagents. The default 0 blocks all new subagents.",
-      "default": 0,
-      "min": 0,
-      "required": true
-    },
-    "max_agent_team_tasks_per_session": {
-      "type": "number",
-      "title": "Max agent-team tasks per session",
-      "description": "Maximum agent-team tasks that may be created in one session. The default 0 suppresses agent-team task creation.",
       "default": 0,
       "min": 0,
       "required": true
@@ -68,7 +52,7 @@
     "enforcement_enabled": {
       "type": "boolean",
       "title": "Enable enforcement",
-      "description": "When true, hooks deny over-budget subagents, agent-team tasks, and prompts. When false, the plugin records usage without blocking.",
+      "description": "When true, hooks deny over-budget subagents and prompts. When false, the plugin records usage without blocking.",
       "default": true,
       "required": true
     }
