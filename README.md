@@ -1,6 +1,6 @@
-# Claude Code Subagent Budget Guard
+# Claude Code Agent Guard
 
-Marketplace-ready Claude Code plugin that hard-denies subagents before setup, records verified subagent usage, and enforces a per-session 5-hour usage budget through a statusLine bridge.
+Marketplace-ready Claude Code plugin that guards subagent usage, records verified subagent tokens, and enforces a per-session 5-hour usage budget through a statusLine bridge.
 
 ## What It Does
 
@@ -18,18 +18,18 @@ From Claude Code, add this repository as a marketplace:
 
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
-/plugin install subagent-budget-guard@subagent-budget-tools
-/subagent-budget-guard:setup
-/subagent-budget-guard:verify
+/plugin install agent-guard@subagent-budget-tools
+/agent-guard:init
+/agent-guard:doctor
 ```
 
-After `/subagent-budget-guard:setup`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
+After `/agent-guard:init`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 Equivalent CLI commands:
 
 ```powershell
 claude plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
-claude plugin install subagent-budget-guard@subagent-budget-tools
+claude plugin install agent-guard@subagent-budget-tools
 claude
 ```
 
@@ -43,7 +43,7 @@ Claude Code installs plugins from marketplaces. Npm can be used as a plugin sour
 
 ```powershell
 npm install -g @rex_koh/subagent-budget-guard
-subagent-budget-guard-verify --offline
+agent-guard doctor --offline
 ```
 
 Maintainer publish command:
@@ -66,8 +66,8 @@ If `claude` is not on `PATH`, install or expose the Claude Code CLI first.
 Run the setup skill once after installing the plugin:
 
 ```text
-/subagent-budget-guard:setup
-/subagent-budget-guard:verify
+/agent-guard:init
+/agent-guard:doctor
 ```
 
 The setup script updates `~/.claude/settings.json` so Claude Code runs:
@@ -78,9 +78,9 @@ node <plugin-root>/bin/statusline.js --data <plugin-data>
 
 If you already had a statusLine command, it is preserved in `<plugin-data>/statusline-bridge.json` and wrapped. Interact with Claude Code once after setup so the bridge receives fresh statusLine JSON.
 
-After setup, fully exit and reopen Claude Code, then run `/subagent-budget-guard:verify`. This restart replaces the old in-session reload instruction.
+After setup, fully exit and reopen Claude Code, then run `/agent-guard:doctor`. This restart replaces the old in-session reload instruction.
 
-Setup also writes the recommended plugin config into `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`, replacing the long `--config ...` install command:
+Setup also writes the recommended plugin config into `pluginConfigs.agent-guard@subagent-budget-tools.options`, replacing the long `--config ...` install command:
 
 ```text
 max_concurrent_subagents=1
@@ -96,13 +96,13 @@ For existing installs, setup removes obsolete `max_subagents_per_session` and `m
 The setup skill can also ask for custom values. Choose custom setup when prompted, or run the helper CLI directly:
 
 ```powershell
-subagent-budget-guard-setup --interactive
+agent-guard init
 ```
 
 Non-interactive custom setup is also supported:
 
 ```powershell
-subagent-budget-guard-setup `
+agent-guard init `
   --config max_concurrent_subagents=2 `
   --config max_subagent_tokens_per_session=250000 `
   --config subagent_token_warning_threshold_percent=90 `
@@ -113,7 +113,7 @@ subagent-budget-guard-setup `
 
 ## Configuration
 
-The plugin reads these settings from `~/.claude/settings.json` under `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`. Runtime defaults remain strict until `/subagent-budget-guard:setup` applies the recommended working preset.
+The plugin reads these settings from `~/.claude/settings.json` under `pluginConfigs.agent-guard@subagent-budget-tools.options`. Runtime defaults remain strict until `/agent-guard:init` applies the recommended working preset.
 
 | Key | Manifest default | Setup value | Meaning |
 | --- | ---: | ---: | --- |
@@ -131,13 +131,13 @@ Claude Code reports `Agent.totalTokens` after an `Agent` call completes, so toke
 Show the current session report:
 
 ```text
-/subagent-budget-guard:report
+/agent-guard:status
 ```
 
 Run offline verification:
 
 ```text
-/subagent-budget-guard:verify
+/agent-guard:doctor
 ```
 
 Direct commands:
@@ -145,7 +145,7 @@ Direct commands:
 ```powershell
 npm test
 npm run verify:offline
-node .\plugins\subagent-budget-guard\bin\verify.js --live
+node .\plugins\subagent-budget-guard\bin\agent-guard.js doctor --live
 ```
 
 The live verifier does not submit Claude prompts. It runs local validation, checks the statusLine bridge, and runs `claude plugin validate` only when `claude` is on `PATH`.

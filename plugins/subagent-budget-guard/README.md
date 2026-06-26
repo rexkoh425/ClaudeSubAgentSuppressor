@@ -1,6 +1,6 @@
-# Subagent Budget Guard
+# Agent Guard
 
-Claude Code plugin that blocks subagents before setup, records verified subagent usage, and enforces a session budget against Claude Code's 5-hour usage percentage.
+Claude Code plugin that guards subagent usage, records verified subagent tokens, and enforces a session budget against Claude Code's 5-hour usage percentage.
 
 ## Install
 
@@ -8,17 +8,17 @@ Recommended Claude Code install:
 
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
-/plugin install subagent-budget-guard@subagent-budget-tools
-/subagent-budget-guard:setup
-/subagent-budget-guard:verify
+/plugin install agent-guard@subagent-budget-tools
+/agent-guard:init
+/agent-guard:doctor
 ```
 
-After `/subagent-budget-guard:setup`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
+After `/agent-guard:init`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 Useful after install:
 
 ```text
-/subagent-budget-guard:report
+/agent-guard:status
 ```
 
 ## NPM Package
@@ -29,7 +29,7 @@ Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a 
 
 ```bash
 npm install -g @rex_koh/subagent-budget-guard
-subagent-budget-guard-verify --offline
+agent-guard doctor --offline
 ```
 
 Maintainer publish command:
@@ -44,7 +44,7 @@ Offline verification:
 node bin/verify.js --offline
 ```
 
-The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/subagent-budget-guard:setup` to replace the long `--config ...` install command with the recommended config:
+The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/agent-guard:init` to choose defaults or custom values:
 
 ```text
 max_concurrent_subagents=1
@@ -60,13 +60,13 @@ For existing installs, setup also removes obsolete `max_subagents_per_session` a
 The setup skill can also ask for custom values. For direct terminal setup, use:
 
 ```bash
-subagent-budget-guard-setup --interactive
+agent-guard init
 ```
 
 Or pass explicit values:
 
 ```bash
-subagent-budget-guard-setup \
+agent-guard init \
   --config max_concurrent_subagents=2 \
   --config max_subagent_tokens_per_session=250000 \
   --config subagent_token_warning_threshold_percent=90 \

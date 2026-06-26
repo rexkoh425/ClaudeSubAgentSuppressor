@@ -1,18 +1,12 @@
 ---
-description: Compatibility alias for /agent-guard:init.
+description: Initialize Agent Guard settings and the statusLine bridge.
 ---
 
-# Setup Agent Guard
+# Init Agent Guard
 
-Prefer `/agent-guard:init`.
+Ask the user whether to use recommended defaults or custom values.
 
-Ask the user whether to use the recommended defaults or customize the values. If they choose defaults, run:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init --defaults
-```
-
-If they choose custom values, ask for each value below. The value in parentheses is the default; accept a blank answer as the default.
+Recommended defaults:
 
 ```text
 max_concurrent_subagents=1
@@ -23,7 +17,13 @@ absolute_five_hour_ceiling_percent=95
 enforcement_enabled=true
 ```
 
-Then run setup with the chosen values:
+If they choose defaults, run:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init --defaults
+```
+
+If they choose custom values, ask for each value. Accept a blank answer as the default, then run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init \
@@ -40,5 +40,3 @@ Then tell the user to fully exit and reopen Claude Code, interact once so the st
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" doctor --live
 ```
-
-The live verifier does not submit Claude prompts. It checks local plugin shape, Claude plugin validation when `claude` is on `PATH`, and whether the statusLine bridge is configured.

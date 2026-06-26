@@ -15,7 +15,7 @@ const CONFIG_KEY_SET = new Set(CONFIG_KEYS);
 
 function usage() {
   return [
-    'Usage: subagent-budget-guard-setup [--interactive] [--config key=value ...]',
+    'Usage: agent-guard init [--defaults] [--interactive] [--config key=value ...]',
     '',
     'Config keys:',
     ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
@@ -39,6 +39,7 @@ function parseConfigPair(pair) {
 function parseArgs(args) {
   const options = {
     interactive: false,
+    defaults: false,
     overrides: {}
   };
 
@@ -50,6 +51,10 @@ function parseArgs(args) {
     }
     if (arg === '--interactive') {
       options.interactive = true;
+      continue;
+    }
+    if (arg === '--defaults' || arg === '--yes' || arg === '-y') {
+      options.defaults = true;
       continue;
     }
     if (arg === '--config') {
@@ -71,7 +76,7 @@ function parseArgs(args) {
   return options;
 }
 
-async function promptForConfig(defaults) {
+async function promptForConfig(defaults, { askMode = true } = {}) {
   const rl = createInterface({
     input: process.stdin,
     output: process.stderr
@@ -79,6 +84,13 @@ async function promptForConfig(defaults) {
   const answers = {};
 
   try {
+    if (askMode) {
+      const useDefaults = await rl.question('Use recommended defaults? [Y/n]: ');
+      if (!useDefaults.trim() || /^y(es)?$/i.test(useDefaults.trim())) {
+        return buildSetupConfig(defaults);
+      }
+    }
+
     for (const key of CONFIG_KEYS) {
       const answer = await rl.question(`${key} [${defaults[key]}]: `);
       if (answer.trim()) {
@@ -94,9 +106,12 @@ async function promptForConfig(defaults) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const defaults = buildSetupConfig(options.overrides);
   const setupConfig = options.interactive
-    ? await promptForConfig(buildSetupConfig(options.overrides))
-    : buildSetupConfig(options.overrides);
+    ? await promptForConfig(defaults, { askMode: false })
+    : !options.defaults && Object.keys(options.overrides).length === 0 && process.stdin.isTTY
+      ? await promptForConfig(defaults)
+      : defaults;
   const result = await installStatusLineBridge({
     homeDir: getHomeDir(process.env),
     pluginRoot: getPluginRoot(process.env),
@@ -106,8 +121,8 @@ async function main() {
 
   process.stdout.write(
     [
-      'Subagent Budget Guard statusLine bridge installed.',
-      'Recommended plugin config applied:',
+      'Agent Guard statusLine bridge installed.',
+      'Plugin config applied:',
       `  max_concurrent_subagents=${result.pluginConfigOptions.max_concurrent_subagents}`,
       `  max_subagent_tokens_per_session=${result.pluginConfigOptions.max_subagent_tokens_per_session}`,
       `  subagent_token_warning_threshold_percent=${result.pluginConfigOptions.subagent_token_warning_threshold_percent}`,

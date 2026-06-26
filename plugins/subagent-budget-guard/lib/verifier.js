@@ -104,14 +104,14 @@ export async function runOfflineVerification({
       const marketplace = await readJson(marketplacePath);
       assert(marketplace.name === 'subagent-budget-tools', 'marketplace name mismatch');
       assert(Array.isArray(marketplace.plugins), 'marketplace.plugins must be an array');
-      const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-budget-guard');
-      assert(entry, 'subagent-budget-guard entry missing');
+      const entry = marketplace.plugins.find((plugin) => plugin.name === 'agent-guard');
+      assert(entry, 'agent-guard entry missing');
       assert(entry.source?.source === 'npm', 'marketplace source must use npm');
       assert(
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.8', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.2.0', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -129,7 +129,7 @@ export async function runOfflineVerification({
   await withCheck(result, 'plugin-manifest-no-install-config', async () => {
     const manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
     const manifest = await readJson(manifestPath);
-    assert(manifest.name === 'subagent-budget-guard', 'plugin name mismatch');
+    assert(manifest.name === 'agent-guard', 'plugin name mismatch');
     assert(
       manifest.hooks === undefined,
       'manifest.hooks must be omitted for default hooks/hooks.json to avoid duplicate loading'
@@ -168,12 +168,16 @@ export async function runOfflineVerification({
   await withCheck(result, 'script-paths', async () => {
     const scripts = [
       'bin/hook.js',
+      'bin/agent-guard.js',
       'bin/statusline.js',
       'bin/setup.js',
       'bin/report.js',
       'bin/verify.js',
       'lib/guard.js',
       'lib/verifier.js',
+      'skills/init/SKILL.md',
+      'skills/status/SKILL.md',
+      'skills/doctor/SKILL.md',
       'skills/setup/SKILL.md',
       'skills/report/SKILL.md',
       'skills/verify/SKILL.md'
@@ -408,12 +412,12 @@ export async function runLiveVerification({
       const list = await runCommand('claude', ['plugin', 'list'], { cwd: repoRoot });
       assert(list.code === 0, list.stderr || list.stdout || 'claude plugin list failed');
       assert(
-        list.stdout.includes('subagent-budget-guard'),
-        'subagent-budget-guard is not installed'
+        list.stdout.includes('agent-guard'),
+        'agent-guard is not installed'
       );
       assert(
-        !/subagent-budget-guard@subagent-budget-tools[\s\S]*failed to load/i.test(list.stdout),
-        'subagent-budget-guard is installed but failed to load'
+        !/agent-guard@subagent-budget-tools[\s\S]*failed to load/i.test(list.stdout),
+        'agent-guard is installed but failed to load'
       );
       return 'claude plugin list returned output';
     });
@@ -427,7 +431,7 @@ export async function runLiveVerification({
       typeof settings.statusLine?.command === 'string' &&
         settings.statusLine.command.includes('statusline.js') &&
         settings.statusLine.command.includes('--data'),
-      'statusLine bridge is not installed; run /subagent-budget-guard:setup'
+      'statusLine bridge is not installed; run /agent-guard:init'
     );
     return settings.statusLine.command;
   });
@@ -438,7 +442,7 @@ export async function runLiveVerification({
 
 export function formatVerificationResult(result) {
   const lines = [
-    `Subagent Budget Guard ${result.mode} verification`,
+    `Agent Guard ${result.mode} verification`,
     result.ok ? 'PASS' : 'FAIL'
   ];
 

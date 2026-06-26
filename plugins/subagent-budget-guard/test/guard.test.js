@@ -77,7 +77,29 @@ test('plugin manifest omits userConfig so install does not ask for config flags'
   const manifestPath = path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
+  assert.equal(manifest.name, 'agent-guard');
   assert.equal(manifest.userConfig, undefined);
+});
+
+test('marketplace exposes the short agent-guard install name', async () => {
+  const marketplace = JSON.parse(
+    await readFile(path.resolve('.claude-plugin/marketplace.json'), 'utf8')
+  );
+  const entry = marketplace.plugins.find((plugin) => plugin.name === 'agent-guard');
+
+  assert.ok(entry, 'missing agent-guard marketplace entry');
+  assert.equal(entry.displayName, 'Agent Guard');
+  assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
+});
+
+test('short skill command names are available', async () => {
+  const skillsDir = path.resolve('plugins/subagent-budget-guard/skills');
+  const expected = ['init', 'status', 'doctor'];
+
+  for (const name of expected) {
+    const text = await readFile(path.join(skillsDir, name, 'SKILL.md'), 'utf8');
+    assert.match(text, new RegExp(`# .*${name === 'init' ? 'Init' : name === 'status' ? 'Status' : 'Doctor'}`, 'i'));
+  }
 });
 
 test('loadConfig reads setup options from Claude settings', async () => {
@@ -89,7 +111,7 @@ test('loadConfig reads setup options from Claude settings', async () => {
       path.join(claudeDir, 'settings.json'),
       JSON.stringify({
         pluginConfigs: {
-          'subagent-budget-guard@subagent-budget-tools': {
+          'agent-guard@subagent-budget-tools': {
             options: {
               max_concurrent_subagents: 2,
               max_subagent_tokens_per_session: 50000,
@@ -524,7 +546,7 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
 
       const settings = JSON.parse(await readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
       const options =
-        settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'].options;
+        settings.pluginConfigs['agent-guard@subagent-budget-tools'].options;
 
       assert.deepEqual(options, {
         max_concurrent_subagents: 1,
@@ -632,7 +654,7 @@ test('setup CLI applies custom config values over recommended defaults', async (
       await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
     );
     const options =
-      settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'].options;
+      settings.pluginConfigs['agent-guard@subagent-budget-tools'].options;
 
     assert.equal(options.max_concurrent_subagents, 3);
     assert.equal(options.max_subagent_tokens_per_session, 250000);
@@ -640,6 +662,60 @@ test('setup CLI applies custom config values over recommended defaults', async (
     assert.equal(options.session_five_hour_budget_percent, 10);
     assert.equal(options.absolute_five_hour_ceiling_percent, 90);
     assert.equal(options.enforcement_enabled, false);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('agent-guard init writes short plugin config id and removes legacy config id', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    const claudeDir = path.join(homeDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'subagent-budget-guard@subagent-budget-tools': {
+            options: {
+              max_concurrent_subagents: 0,
+              max_subagent_tokens_per_session: 0
+            }
+          }
+        }
+      })
+    );
+
+    await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/agent-guard.js'),
+        'init',
+        '--defaults'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    assert.ok(settings.pluginConfigs['agent-guard@subagent-budget-tools']);
+    assert.equal(settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'], undefined);
+    assert.equal(
+      settings.pluginConfigs['agent-guard@subagent-budget-tools'].options.max_concurrent_subagents,
+      1
+    );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });

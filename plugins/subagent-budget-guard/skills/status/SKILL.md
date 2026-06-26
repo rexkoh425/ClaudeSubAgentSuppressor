@@ -1,13 +1,11 @@
 ---
-description: Compatibility alias for /agent-guard:status.
+description: Show the current Agent Guard report.
 disable-model-invocation: true
 ---
 
-# Report Agent Guard Usage
+# Status Agent Guard
 
-Prefer `/agent-guard:status`.
-
-Run this command:
+Run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" status

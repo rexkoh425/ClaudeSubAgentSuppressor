@@ -1,11 +1,9 @@
 ---
-description: Compatibility alias for /agent-guard:doctor.
+description: Verify Agent Guard installation and offline behavior.
 disable-model-invocation: true
 ---
 
-# Verify Agent Guard
-
-Prefer `/agent-guard:doctor`.
+# Doctor Agent Guard
 
 For default offline verification, run:
 
