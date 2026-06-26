@@ -90,7 +90,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.6', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.1.7', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {

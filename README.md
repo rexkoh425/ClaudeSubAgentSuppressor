@@ -19,11 +19,11 @@ From Claude Code, add this repository as a marketplace:
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install subagent-budget-guard@subagent-budget-tools
-/reload-plugins
 /subagent-budget-guard:setup
-/reload-plugins
 /subagent-budget-guard:verify
 ```
+
+After `/subagent-budget-guard:setup`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 Equivalent CLI commands:
 
@@ -67,7 +67,6 @@ Run the setup skill once after installing the plugin:
 
 ```text
 /subagent-budget-guard:setup
-/reload-plugins
 /subagent-budget-guard:verify
 ```
 
@@ -78,6 +77,8 @@ node <plugin-root>/bin/statusline.js --data <plugin-data>
 ```
 
 If you already had a statusLine command, it is preserved in `<plugin-data>/statusline-bridge.json` and wrapped. Interact with Claude Code once after setup so the bridge receives fresh statusLine JSON.
+
+After setup, fully exit and reopen Claude Code, then run `/subagent-budget-guard:verify`. This restart replaces the old in-session reload instruction.
 
 Setup also writes the recommended plugin config into `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`, replacing the long `--config ...` install command:
 

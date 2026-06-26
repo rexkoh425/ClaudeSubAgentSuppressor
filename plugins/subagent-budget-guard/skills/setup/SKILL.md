@@ -22,7 +22,7 @@ absolute_five_hour_ceiling_percent=95
 enforcement_enabled=true
 ```
 
-Then tell the user to run `/reload-plugins`, interact with Claude Code once so the statusLine bridge receives fresh session JSON, and run:
+Then tell the user to fully exit and reopen Claude Code, interact once so the statusLine bridge receives fresh session JSON, and run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/verify.js" --live

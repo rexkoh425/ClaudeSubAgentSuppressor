@@ -9,11 +9,11 @@ Recommended Claude Code install:
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install subagent-budget-guard@subagent-budget-tools
-/reload-plugins
 /subagent-budget-guard:setup
-/reload-plugins
 /subagent-budget-guard:verify
 ```
+
+After `/subagent-budget-guard:setup`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 Useful after install:
 
