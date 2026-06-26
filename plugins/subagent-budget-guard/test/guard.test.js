@@ -93,7 +93,32 @@ test('marketplace exposes the subagent-cap install name', async () => {
   assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
 });
 
-test('only the lightweight init skill is exposed as a slash command', async () => {
+test('release metadata is bumped for sub-agent-view slash command', async () => {
+  const expectedVersion = '0.5.1';
+  const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
+  const pluginPackage = JSON.parse(
+    await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json'),
+      'utf8'
+    )
+  );
+  const marketplace = JSON.parse(
+    await readFile(path.resolve('.claude-plugin/marketplace.json'), 'utf8')
+  );
+  const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-cap');
+
+  assert.equal(rootPackage.version, expectedVersion);
+  assert.equal(pluginPackage.version, expectedVersion);
+  assert.equal(manifest.version, expectedVersion);
+  assert.equal(marketplace.version, expectedVersion);
+  assert.equal(entry.version, expectedVersion);
+  assert.equal(entry.source.version, expectedVersion);
+});
+
+test('plugin exposes init skill plus sub-agent-view command', async () => {
   const skillsDir = path.resolve('plugins/subagent-budget-guard/skills');
   const entries = await readdir(skillsDir, { withFileTypes: true });
   const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
@@ -102,6 +127,20 @@ test('only the lightweight init skill is exposed as a slash command', async () =
 
   const text = await readFile(path.join(skillsDir, 'init', 'SKILL.md'), 'utf8');
   assert.match(text, /# Init Subagent Cap/i);
+
+  const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
+  const command = await readFile(commandPath, 'utf8');
+
+  assert.match(command, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/view\.js"/);
+  assert.match(command, /Show the command output verbatim/i);
+});
+
+test('npm package ships Claude command files', async () => {
+  const packageJson = JSON.parse(
+    await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
+  );
+
+  assert.ok(packageJson.files.includes('commands/'));
 });
 
 test('loadConfig reads setup options from Claude settings', async () => {

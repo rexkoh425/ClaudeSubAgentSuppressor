@@ -2,7 +2,7 @@
   "name": "subagent-cap",
   "displayName": "Subagent Cap",
   "description": "Hard-deny subagent launches, record verified subagent usage, and enforce a session budget against Claude Code's 5-hour rate-limit percentage.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": {
     "name": "ClaudeSubAgentSuppressor"
   },

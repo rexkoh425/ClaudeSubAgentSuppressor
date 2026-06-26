@@ -10,9 +10,12 @@ Recommended Claude Code install:
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install subagent-cap@subagent-tools
 /subagent-cap:init
+/sub-agent-view
 ```
 
 After `/subagent-cap:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
+
+`/sub-agent-view` can be run after a session to display how many subagents were spawned, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
 
 ## NPM Package
 
@@ -27,7 +30,7 @@ subagent-cap status
 sub-agent-view
 ```
 
-`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, and tool-call count. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as `subagent-cap view`.
+`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, and tool-call count. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as the Claude command `/sub-agent-view` and the npm alias `subagent-cap view`.
 
 Maintainer publish command:
 
