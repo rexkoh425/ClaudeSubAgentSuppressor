@@ -35,7 +35,9 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init \
   --config enforcement_enabled=<true-or-false>
 ```
 
-Then tell the user to fully exit and reopen Claude Code, interact once so the statusLine bridge receives fresh session JSON, and run:
+Then tell the user to fully exit and reopen Claude Code, then interact once so the statusLine bridge receives fresh session JSON.
+
+For optional terminal verification, run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" doctor --live

@@ -1,6 +1,6 @@
 {
   "name": "@rex_koh/subagent-budget-guard",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Claude Code plugin that blocks subagents by default, records verified subagent usage, and enforces 5-hour usage budgets.",
   "license": "MIT",
   "author": "ClaudeSubAgentSuppressor",
@@ -32,11 +32,7 @@
     "LICENSE"
   ],
   "bin": {
-    "agent-guard": "bin/agent-guard.js",
-    "ag": "bin/agent-guard.js",
-    "subagent-budget-guard-report": "bin/report.js",
-    "subagent-budget-guard-setup": "bin/setup.js",
-    "subagent-budget-guard-verify": "bin/verify.js"
+    "agent-guard": "bin/agent-guard.js"
   },
   "publishConfig": {
     "access": "public"

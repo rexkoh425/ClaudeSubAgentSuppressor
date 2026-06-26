@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -92,14 +92,15 @@ test('marketplace exposes the short agent-guard install name', async () => {
   assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
 });
 
-test('short skill command names are available', async () => {
+test('only the lightweight init skill is exposed as a slash command', async () => {
   const skillsDir = path.resolve('plugins/subagent-budget-guard/skills');
-  const expected = ['init', 'status', 'doctor'];
+  const entries = await readdir(skillsDir, { withFileTypes: true });
+  const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
 
-  for (const name of expected) {
-    const text = await readFile(path.join(skillsDir, name, 'SKILL.md'), 'utf8');
-    assert.match(text, new RegExp(`# .*${name === 'init' ? 'Init' : name === 'status' ? 'Status' : 'Doctor'}`, 'i'));
-  }
+  assert.deepEqual(names, ['init']);
+
+  const text = await readFile(path.join(skillsDir, 'init', 'SKILL.md'), 'utf8');
+  assert.match(text, /# Init Agent Guard/i);
 });
 
 test('loadConfig reads setup options from Claude settings', async () => {

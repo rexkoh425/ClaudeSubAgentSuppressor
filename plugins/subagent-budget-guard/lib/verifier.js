@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.2.1', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.3.0', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -175,12 +175,7 @@ export async function runOfflineVerification({
       'bin/verify.js',
       'lib/guard.js',
       'lib/verifier.js',
-      'skills/init/SKILL.md',
-      'skills/status/SKILL.md',
-      'skills/doctor/SKILL.md',
-      'skills/setup/SKILL.md',
-      'skills/report/SKILL.md',
-      'skills/verify/SKILL.md'
+      'skills/init/SKILL.md'
     ];
     for (const script of scripts) {
       assert(await pathExists(path.join(root, script)), `missing ${script}`);

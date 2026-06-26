@@ -10,16 +10,9 @@ Recommended Claude Code install:
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install agent-guard@subagent-budget-tools
 /agent-guard:init
-/agent-guard:doctor
 ```
 
-After `/agent-guard:init`, fully exit and reopen Claude Code before verification so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
-
-Useful after install:
-
-```text
-/agent-guard:status
-```
+After `/agent-guard:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 ## NPM Package
 
@@ -30,6 +23,7 @@ Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a 
 ```bash
 npm install -g @rex_koh/subagent-budget-guard
 agent-guard doctor --offline
+agent-guard status
 ```
 
 Maintainer publish command:
@@ -57,7 +51,7 @@ enforcement_enabled=true
 
 For existing installs, setup also removes obsolete `max_subagents_per_session` and `max_agent_team_tasks_per_session` options from this plugin's Claude settings.
 
-The setup skill can also ask for custom values. For direct terminal setup, use:
+The setup skill can ask for custom values. For direct terminal setup, use:
 
 ```bash
 agent-guard init
