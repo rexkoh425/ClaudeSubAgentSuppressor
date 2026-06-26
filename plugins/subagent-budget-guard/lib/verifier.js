@@ -5,6 +5,9 @@ import path from 'node:path';
 
 import {
   CONFIG_KEYS,
+  PLUGIN_ID,
+  REMOVED_CONFIG_KEYS,
+  SETUP_CONFIG,
   buildReport,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
@@ -87,7 +90,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.1.3', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.1.4', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -281,6 +284,53 @@ export async function runOfflineVerification({
       assert(settings.statusLine.command.includes('statusline.js'), 'bridge command missing');
       assert(settings.statusLine.command.includes('--data'), 'bridge data arg missing');
       return setup.bridgePath;
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  await withCheck(result, 'setup-applies-plugin-config', async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-data-'));
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'sbg-verify-home-'));
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const claudeDir = path.join(homeDir, '.claude');
+      const settingsPath = path.join(claudeDir, 'settings.json');
+      await mkdir(claudeDir, { recursive: true });
+      await writeFile(
+        settingsPath,
+        JSON.stringify({
+          pluginConfigs: {
+            [PLUGIN_ID]: {
+              options: {
+                max_subagents_per_session: 9,
+                max_concurrent_subagents: 0,
+                max_agent_team_tasks_per_session: 4,
+                max_subagent_tokens_per_session: 0,
+                enforcement_enabled: false
+              }
+            }
+          }
+        })
+      );
+
+      await installStatusLineBridge({
+        homeDir,
+        pluginRoot: root,
+        pluginData: dataDir
+      });
+
+      const settings = await readJson(settingsPath);
+      const options = settings.pluginConfigs?.[PLUGIN_ID]?.options;
+      assert(options, `missing pluginConfigs.${PLUGIN_ID}.options`);
+      for (const key of CONFIG_KEYS) {
+        assert(options[key] === SETUP_CONFIG[key], `setup config ${key} mismatch`);
+      }
+      for (const key of REMOVED_CONFIG_KEYS) {
+        assert(!(key in options), `obsolete option ${key} was not removed`);
+      }
+      return `${PLUGIN_ID} recommended setup config applied`;
     } finally {
       await rm(dataDir, { recursive: true, force: true });
       await rm(homeDir, { recursive: true, force: true });

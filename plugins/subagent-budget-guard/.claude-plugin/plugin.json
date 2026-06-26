@@ -2,7 +2,7 @@
   "name": "subagent-budget-guard",
   "displayName": "Subagent Budget Guard",
   "description": "Hard-deny subagent launches, record verified subagent usage, and enforce a session budget against Claude Code's 5-hour rate-limit percentage.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": {
     "name": "ClaudeSubAgentSuppressor"
   },

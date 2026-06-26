@@ -13,7 +13,12 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
 export const PLUGIN_NAME = 'subagent-budget-guard';
+export const PLUGIN_ID = 'subagent-budget-guard@subagent-budget-tools';
 
 export const DEFAULT_CONFIG = Object.freeze({
   max_concurrent_subagents: 0,
@@ -24,7 +29,17 @@ export const DEFAULT_CONFIG = Object.freeze({
   enforcement_enabled: true
 });
 
+export const SETUP_CONFIG = Object.freeze({
+  ...DEFAULT_CONFIG,
+  max_concurrent_subagents: 1,
+  max_subagent_tokens_per_session: 100000
+});
+
 export const CONFIG_KEYS = Object.freeze(Object.keys(DEFAULT_CONFIG));
+export const REMOVED_CONFIG_KEYS = Object.freeze([
+  'max_subagents_per_session',
+  'max_agent_team_tasks_per_session'
+]);
 
 const NUMBER_KEYS = new Set(
   CONFIG_KEYS.filter((key) => typeof DEFAULT_CONFIG[key] === 'number')
@@ -92,7 +107,7 @@ export function getHomeDir(env = process.env) {
 }
 
 export function getPluginRoot(env = process.env) {
-  return env.CLAUDE_PLUGIN_ROOT || path.resolve('.');
+  return env.CLAUDE_PLUGIN_ROOT || PACKAGE_ROOT;
 }
 
 export function getDataDir(env = process.env) {
@@ -757,6 +772,42 @@ function isBridgeStatusLine(statusLine) {
   );
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function applySetupPluginConfig(
+  settings,
+  { pluginId = PLUGIN_ID, setupConfig = SETUP_CONFIG } = {}
+) {
+  if (!isPlainObject(settings.pluginConfigs)) {
+    settings.pluginConfigs = {};
+  }
+
+  const currentEntry = isPlainObject(settings.pluginConfigs[pluginId])
+    ? settings.pluginConfigs[pluginId]
+    : {};
+  const currentOptions = isPlainObject(currentEntry.options)
+    ? currentEntry.options
+    : {};
+  const nextOptions = { ...currentOptions };
+
+  for (const key of REMOVED_CONFIG_KEYS) {
+    delete nextOptions[key];
+  }
+
+  for (const key of CONFIG_KEYS) {
+    nextOptions[key] = setupConfig[key];
+  }
+
+  settings.pluginConfigs[pluginId] = {
+    ...currentEntry,
+    options: nextOptions
+  };
+
+  return nextOptions;
+}
+
 export async function installStatusLineBridge({
   homeDir = getHomeDir(),
   pluginRoot = getPluginRoot(),
@@ -778,6 +829,7 @@ export async function installStatusLineBridge({
     padding: existing?.padding ?? previousStatusLine?.padding ?? 0,
     refreshInterval: existing?.refreshInterval ?? 5
   };
+  const pluginConfigOptions = applySetupPluginConfig(settings);
 
   settings.statusLine = nextStatusLine;
   await writeJsonAtomic(settingsPath, settings);
@@ -794,7 +846,9 @@ export async function installStatusLineBridge({
     settingsPath,
     bridgePath,
     command,
-    previousStatusLine
+    previousStatusLine,
+    pluginConfigApplied: true,
+    pluginConfigOptions
   };
 }
 

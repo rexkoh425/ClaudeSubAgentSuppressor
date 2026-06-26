@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_CONFIG,
   buildReport,
+  getPluginRoot,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
   handleSubagentStart,
@@ -50,6 +52,12 @@ function agentInput(sessionId = 'session-a') {
     tool_use_id: 'toolu_123'
   };
 }
+
+test('getPluginRoot falls back to the installed package root', () => {
+  const expectedRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+  assert.equal(getPluginRoot({}), expectedRoot);
+});
 
 test('loadConfig uses strict deny-by-default limits', () => {
   const config = loadConfig({});
@@ -438,6 +446,57 @@ test('installStatusLineBridge preserves an existing statusLine command', async (
   });
 });
 
+test('installStatusLineBridge applies setup config and removes obsolete options', async () => {
+  await withTempEnv(async (env, dataDir) => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+    try {
+      const claudeDir = path.join(homeDir, '.claude');
+      await mkdir(claudeDir, { recursive: true });
+      await writeFile(
+        path.join(claudeDir, 'settings.json'),
+        JSON.stringify({
+          pluginConfigs: {
+            'subagent-budget-guard@subagent-budget-tools': {
+              options: {
+                max_subagents_per_session: 3,
+                max_concurrent_subagents: 0,
+                max_agent_team_tasks_per_session: 2,
+                max_subagent_tokens_per_session: 0,
+                enforcement_enabled: false
+              }
+            }
+          }
+        })
+      );
+
+      const result = await installStatusLineBridge({
+        homeDir,
+        pluginRoot: env.CLAUDE_PLUGIN_ROOT,
+        pluginData: dataDir
+      });
+
+      const settings = JSON.parse(await readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
+      const options =
+        settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'].options;
+
+      assert.deepEqual(options, {
+        max_concurrent_subagents: 1,
+        max_subagent_tokens_per_session: 100000,
+        subagent_token_warning_threshold_percent: 95,
+        session_five_hour_budget_percent: 25,
+        absolute_five_hour_ceiling_percent: 95,
+        enforcement_enabled: true
+      });
+      assert.equal(result.pluginConfigApplied, true);
+      assert.deepEqual(result.pluginConfigOptions, options);
+      assert.equal('max_subagents_per_session' in options, false);
+      assert.equal('max_agent_team_tasks_per_session' in options, false);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test('offline verifier validates plugin shape and simulated enforcement', async () => {
   await withTempEnv(async (env) => {
     const result = await runOfflineVerification({
@@ -449,5 +508,6 @@ test('offline verifier validates plugin shape and simulated enforcement', async 
     assert.equal(result.failures.length, 0);
     assert.ok(result.checks.some((check) => check.name === 'pretool-agent-denies-default'));
     assert.ok(result.checks.some((check) => check.name === 'statusline-budget-blocks'));
+    assert.ok(result.checks.some((check) => check.name === 'setup-applies-plugin-config'));
   });
 });

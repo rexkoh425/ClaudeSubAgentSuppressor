@@ -1,6 +1,6 @@
 # Claude Code Subagent Budget Guard
 
-Marketplace-ready Claude Code plugin that hard-denies subagents by default, records verified subagent usage, and enforces a per-session 5-hour usage budget through a statusLine bridge.
+Marketplace-ready Claude Code plugin that hard-denies subagents before setup, records verified subagent usage, and enforces a per-session 5-hour usage budget through a statusLine bridge.
 
 ## What It Does
 
@@ -20,6 +20,9 @@ From Claude Code, add this repository as a marketplace:
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install subagent-budget-guard@subagent-budget-tools
 /reload-plugins
+/subagent-budget-guard:setup
+/reload-plugins
+/subagent-budget-guard:verify
 ```
 
 Equivalent CLI commands:
@@ -27,6 +30,7 @@ Equivalent CLI commands:
 ```powershell
 claude plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 claude plugin install subagent-budget-guard@subagent-budget-tools
+claude
 ```
 
 This is the install path anyone can use today because the repository is public.
@@ -59,10 +63,12 @@ If `claude` is not on `PATH`, install or expose the Claude Code CLI first.
 
 ## Required Setup
 
-Run the setup skill once:
+Run the setup skill once after installing the plugin:
 
 ```text
 /subagent-budget-guard:setup
+/reload-plugins
+/subagent-budget-guard:verify
 ```
 
 The setup script updates `~/.claude/settings.json` so Claude Code runs:
@@ -73,18 +79,31 @@ node <plugin-root>/bin/statusline.js --data <plugin-data>
 
 If you already had a statusLine command, it is preserved in `<plugin-data>/statusline-bridge.json` and wrapped. Interact with Claude Code once after setup so the bridge receives fresh statusLine JSON.
 
+Setup also writes the recommended plugin config into `pluginConfigs.subagent-budget-guard@subagent-budget-tools.options`, replacing the long `--config ...` install command:
+
+```text
+max_concurrent_subagents=1
+max_subagent_tokens_per_session=100000
+subagent_token_warning_threshold_percent=95
+session_five_hour_budget_percent=25
+absolute_five_hour_ceiling_percent=95
+enforcement_enabled=true
+```
+
+For existing installs, setup removes obsolete `max_subagents_per_session` and `max_agent_team_tasks_per_session` options from this plugin's config.
+
 ## Configuration
 
-Claude Code prompts for these `userConfig` values when the plugin is enabled. Defaults are intentionally strict:
+Claude Code exposes these `userConfig` values. Install-time manifest defaults remain strict; `/subagent-budget-guard:setup` applies the recommended working preset.
 
-| Key | Default | Meaning |
-| --- | ---: | --- |
-| `max_concurrent_subagents` | `0` | Blocks all concurrent subagents unless raised. |
-| `max_subagent_tokens_per_session` | `0` | No verified-token cap when set to `0`; otherwise caps verified subagent tokens after each completed subagent. |
-| `subagent_token_warning_threshold_percent` | `95` | At this percentage of `max_subagent_tokens_per_session`, the plugin tells Claude to stop using subagents and blocks future subagent launches. |
-| `session_five_hour_budget_percent` | `25` | Max percentage points this session may consume after the bridge records a baseline. |
-| `absolute_five_hour_ceiling_percent` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |
-| `enforcement_enabled` | `true` | Set false to record without blocking. |
+| Key | Manifest default | Setup value | Meaning |
+| --- | ---: | ---: | --- |
+| `max_concurrent_subagents` | `0` | `1` | Maximum active subagents at the same time. `0` blocks all subagents. |
+| `max_subagent_tokens_per_session` | `0` | `100000` | No verified-token cap when `0`; otherwise caps verified subagent tokens after each completed subagent. |
+| `subagent_token_warning_threshold_percent` | `95` | `95` | At this percentage of `max_subagent_tokens_per_session`, the plugin tells Claude to stop using subagents and blocks future subagent launches. |
+| `session_five_hour_budget_percent` | `25` | `25` | Max percentage points this session may consume after the bridge records a baseline. |
+| `absolute_five_hour_ceiling_percent` | `95` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |
+| `enforcement_enabled` | `true` | `true` | Set false to record without blocking. |
 
 Claude Code reports `Agent.totalTokens` after an `Agent` call completes, so token enforcement is based on verified completed subagent runs. The plugin cannot interrupt a still-running subagent mid-token because Claude Code does not expose a live per-token subagent stream to hooks.
 
@@ -127,4 +146,4 @@ plugins/subagent-budget-guard/
 
 ## Security Notes
 
-Claude Code hooks run with the user's normal OS permissions. This plugin does not use network access and has no runtime npm dependencies. It writes session state under `CLAUDE_PLUGIN_DATA`, and setup modifies only the user's Claude Code `settings.json` statusLine field.
+Claude Code hooks run with the user's normal OS permissions. This plugin does not use network access and has no runtime npm dependencies. It writes session state under `CLAUDE_PLUGIN_DATA`, and setup modifies only this plugin's config plus the user's Claude Code `settings.json` statusLine field.

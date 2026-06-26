@@ -1,5 +1,5 @@
 ---
-description: Install or refresh the Subagent Budget Guard statusLine bridge so 5-hour rate-limit percentages can be captured for enforcement.
+description: Install or refresh the Subagent Budget Guard statusLine bridge and apply the recommended plugin config.
 disable-model-invocation: true
 ---
 
@@ -11,7 +11,18 @@ Run this command:
 node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js"
 ```
 
-Then tell the user to interact with Claude Code once so the statusLine bridge receives fresh session JSON. After that, run:
+This applies the recommended config in Claude settings:
+
+```text
+max_concurrent_subagents=1
+max_subagent_tokens_per_session=100000
+subagent_token_warning_threshold_percent=95
+session_five_hour_budget_percent=25
+absolute_five_hour_ceiling_percent=95
+enforcement_enabled=true
+```
+
+Then tell the user to run `/reload-plugins`, interact with Claude Code once so the statusLine bridge receives fresh session JSON, and run:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/verify.js" --live
