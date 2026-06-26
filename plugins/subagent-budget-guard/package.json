@@ -1,0 +1,11 @@
+{
+  "name": "subagent-budget-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "verify:offline": "node bin/verify.js --offline",
+    "verify:live": "node bin/verify.js --live"
+  }
+}

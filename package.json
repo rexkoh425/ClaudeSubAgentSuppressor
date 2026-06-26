@@ -1,0 +1,11 @@
+{
+  "name": "claude-subagent-budget-guard-marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test plugins/subagent-budget-guard/test/*.test.js",
+    "verify:offline": "node plugins/subagent-budget-guard/bin/verify.js --offline",
+    "verify:live": "node plugins/subagent-budget-guard/bin/verify.js --live"
+  }
+}
