@@ -1,8 +1,8 @@
 ---
-description: Initialize Agent Guard settings and the statusLine bridge.
+description: Initialize Subagent Cap settings and the statusLine bridge.
 ---
 
-# Init Agent Guard
+# Init Subagent Cap
 
 Ask the user whether to use recommended defaults or custom values.
 
@@ -20,13 +20,13 @@ enforcement_enabled=true
 If they choose defaults, run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init --defaults
+node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init --defaults
 ```
 
 If they choose custom values, ask for each value. Accept a blank answer as the default, then run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" init \
+node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
   --config max_concurrent_subagents=<value> \
   --config max_subagent_tokens_per_session=<value> \
   --config subagent_token_warning_threshold_percent=<value> \
@@ -40,5 +40,5 @@ Then tell the user to fully exit and reopen Claude Code, then interact once so t
 For optional terminal verification, run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/agent-guard.js" doctor --live
+node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" doctor --live
 ```

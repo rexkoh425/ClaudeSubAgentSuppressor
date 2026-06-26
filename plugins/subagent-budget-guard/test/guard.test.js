@@ -77,18 +77,18 @@ test('plugin manifest omits userConfig so install does not ask for config flags'
   const manifestPath = path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  assert.equal(manifest.name, 'agent-guard');
+  assert.equal(manifest.name, 'subagent-cap');
   assert.equal(manifest.userConfig, undefined);
 });
 
-test('marketplace exposes the short agent-guard install name', async () => {
+test('marketplace exposes the subagent-cap install name', async () => {
   const marketplace = JSON.parse(
     await readFile(path.resolve('.claude-plugin/marketplace.json'), 'utf8')
   );
-  const entry = marketplace.plugins.find((plugin) => plugin.name === 'agent-guard');
+  const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-cap');
 
-  assert.ok(entry, 'missing agent-guard marketplace entry');
-  assert.equal(entry.displayName, 'Agent Guard');
+  assert.ok(entry, 'missing subagent-cap marketplace entry');
+  assert.equal(entry.displayName, 'Subagent Cap');
   assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
 });
 
@@ -100,7 +100,7 @@ test('only the lightweight init skill is exposed as a slash command', async () =
   assert.deepEqual(names, ['init']);
 
   const text = await readFile(path.join(skillsDir, 'init', 'SKILL.md'), 'utf8');
-  assert.match(text, /# Init Agent Guard/i);
+  assert.match(text, /# Init Subagent Cap/i);
 });
 
 test('loadConfig reads setup options from Claude settings', async () => {
@@ -112,7 +112,7 @@ test('loadConfig reads setup options from Claude settings', async () => {
       path.join(claudeDir, 'settings.json'),
       JSON.stringify({
         pluginConfigs: {
-          'agent-guard@subagent-budget-tools': {
+          'subagent-cap@subagent-tools': {
             options: {
               max_concurrent_subagents: 2,
               max_subagent_tokens_per_session: 50000,
@@ -526,7 +526,7 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
         path.join(claudeDir, 'settings.json'),
         JSON.stringify({
           pluginConfigs: {
-            'subagent-budget-guard@subagent-budget-tools': {
+            'subagent-cap@subagent-tools': {
               options: {
                 max_subagents_per_session: 3,
                 max_concurrent_subagents: 0,
@@ -547,7 +547,7 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
 
       const settings = JSON.parse(await readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
       const options =
-        settings.pluginConfigs['agent-guard@subagent-budget-tools'].options;
+        settings.pluginConfigs['subagent-cap@subagent-tools'].options;
 
       assert.deepEqual(options, {
         max_concurrent_subagents: 1,
@@ -591,7 +591,7 @@ test('offline verifier ignores real Claude settings from caller environment', as
       path.join(claudeDir, 'settings.json'),
       JSON.stringify({
         pluginConfigs: {
-          'subagent-budget-guard@subagent-budget-tools': {
+          'subagent-cap@subagent-tools': {
             options: {
               max_concurrent_subagents: 1,
               max_subagent_tokens_per_session: 100000,
@@ -655,7 +655,7 @@ test('setup CLI applies custom config values over recommended defaults', async (
       await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
     );
     const options =
-      settings.pluginConfigs['agent-guard@subagent-budget-tools'].options;
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options;
 
     assert.equal(options.max_concurrent_subagents, 3);
     assert.equal(options.max_subagent_tokens_per_session, 250000);
@@ -669,7 +669,7 @@ test('setup CLI applies custom config values over recommended defaults', async (
   }
 });
 
-test('agent-guard init writes short plugin config id and removes legacy config id', async () => {
+test('subagent-cap init writes short plugin config id', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
   try {
@@ -678,21 +678,14 @@ test('agent-guard init writes short plugin config id and removes legacy config i
     await writeFile(
       path.join(claudeDir, 'settings.json'),
       JSON.stringify({
-        pluginConfigs: {
-          'subagent-budget-guard@subagent-budget-tools': {
-            options: {
-              max_concurrent_subagents: 0,
-              max_subagent_tokens_per_session: 0
-            }
-          }
-        }
+        pluginConfigs: {}
       })
     );
 
     await execFileAsync(
       process.execPath,
       [
-        path.resolve('plugins/subagent-budget-guard/bin/agent-guard.js'),
+        path.resolve('plugins/subagent-budget-guard/bin/subagent-cap.js'),
         'init',
         '--defaults'
       ],
@@ -711,10 +704,9 @@ test('agent-guard init writes short plugin config id and removes legacy config i
     const settings = JSON.parse(
       await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
     );
-    assert.ok(settings.pluginConfigs['agent-guard@subagent-budget-tools']);
-    assert.equal(settings.pluginConfigs['subagent-budget-guard@subagent-budget-tools'], undefined);
+    assert.ok(settings.pluginConfigs['subagent-cap@subagent-tools']);
     assert.equal(
-      settings.pluginConfigs['agent-guard@subagent-budget-tools'].options.max_concurrent_subagents,
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options.max_concurrent_subagents,
       1
     );
   } finally {

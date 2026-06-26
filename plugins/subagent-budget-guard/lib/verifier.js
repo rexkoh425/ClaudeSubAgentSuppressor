@@ -102,16 +102,16 @@ export async function runOfflineVerification({
     await withCheck(result, 'marketplace-manifest', async () => {
       const marketplacePath = path.join(repoRoot, '.claude-plugin', 'marketplace.json');
       const marketplace = await readJson(marketplacePath);
-      assert(marketplace.name === 'subagent-budget-tools', 'marketplace name mismatch');
+      assert(marketplace.name === 'subagent-tools', 'marketplace name mismatch');
       assert(Array.isArray(marketplace.plugins), 'marketplace.plugins must be an array');
-      const entry = marketplace.plugins.find((plugin) => plugin.name === 'agent-guard');
-      assert(entry, 'agent-guard entry missing');
+      const entry = marketplace.plugins.find((plugin) => plugin.name === 'subagent-cap');
+      assert(entry, 'subagent-cap entry missing');
       assert(entry.source?.source === 'npm', 'marketplace source must use npm');
       assert(
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.3.0', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.4.0', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -129,7 +129,7 @@ export async function runOfflineVerification({
   await withCheck(result, 'plugin-manifest-no-install-config', async () => {
     const manifestPath = path.join(root, '.claude-plugin', 'plugin.json');
     const manifest = await readJson(manifestPath);
-    assert(manifest.name === 'agent-guard', 'plugin name mismatch');
+    assert(manifest.name === 'subagent-cap', 'plugin name mismatch');
     assert(
       manifest.hooks === undefined,
       'manifest.hooks must be omitted for default hooks/hooks.json to avoid duplicate loading'
@@ -168,7 +168,7 @@ export async function runOfflineVerification({
   await withCheck(result, 'script-paths', async () => {
     const scripts = [
       'bin/hook.js',
-      'bin/agent-guard.js',
+      'bin/subagent-cap.js',
       'bin/statusline.js',
       'bin/setup.js',
       'bin/report.js',
@@ -407,12 +407,12 @@ export async function runLiveVerification({
       const list = await runCommand('claude', ['plugin', 'list'], { cwd: repoRoot });
       assert(list.code === 0, list.stderr || list.stdout || 'claude plugin list failed');
       assert(
-        list.stdout.includes('agent-guard'),
-        'agent-guard is not installed'
+        list.stdout.includes('subagent-cap'),
+        'subagent-cap is not installed'
       );
       assert(
-        !/agent-guard@subagent-budget-tools[\s\S]*failed to load/i.test(list.stdout),
-        'agent-guard is installed but failed to load'
+        !/subagent-cap@subagent-tools[\s\S]*failed to load/i.test(list.stdout),
+        'subagent-cap is installed but failed to load'
       );
       return 'claude plugin list returned output';
     });
@@ -426,7 +426,7 @@ export async function runLiveVerification({
       typeof settings.statusLine?.command === 'string' &&
         settings.statusLine.command.includes('statusline.js') &&
         settings.statusLine.command.includes('--data'),
-      'statusLine bridge is not installed; run /agent-guard:init'
+      'statusLine bridge is not installed; run /subagent-cap:init'
     );
     return settings.statusLine.command;
   });
@@ -437,7 +437,7 @@ export async function runLiveVerification({
 
 export function formatVerificationResult(result) {
   const lines = [
-    `Agent Guard ${result.mode} verification`,
+    `Subagent Cap ${result.mode} verification`,
     result.ok ? 'PASS' : 'FAIL'
   ];
 

@@ -1,4 +1,4 @@
-# Agent Guard
+# Subagent Cap
 
 Claude Code plugin that guards subagent usage, records verified subagent tokens, and enforces a session budget against Claude Code's 5-hour usage percentage.
 
@@ -8,11 +8,11 @@ Recommended Claude Code install:
 
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
-/plugin install agent-guard@subagent-budget-tools
-/agent-guard:init
+/plugin install subagent-cap@subagent-tools
+/subagent-cap:init
 ```
 
-After `/agent-guard:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
+After `/subagent-cap:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
 ## NPM Package
 
@@ -22,8 +22,8 @@ Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a 
 
 ```bash
 npm install -g @rex_koh/subagent-budget-guard
-agent-guard doctor --offline
-agent-guard status
+subagent-cap doctor --offline
+subagent-cap status
 ```
 
 Maintainer publish command:
@@ -38,7 +38,7 @@ Offline verification:
 node bin/verify.js --offline
 ```
 
-The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/agent-guard:init` to choose defaults or custom values:
+The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/subagent-cap:init` to choose defaults or custom values:
 
 ```text
 max_concurrent_subagents=1
@@ -54,13 +54,13 @@ For existing installs, setup also removes obsolete `max_subagents_per_session` a
 The setup skill can ask for custom values. For direct terminal setup, use:
 
 ```bash
-agent-guard init
+subagent-cap init
 ```
 
 Or pass explicit values:
 
 ```bash
-agent-guard init \
+subagent-cap init \
   --config max_concurrent_subagents=2 \
   --config max_subagent_tokens_per_session=250000 \
   --config subagent_token_warning_threshold_percent=90 \

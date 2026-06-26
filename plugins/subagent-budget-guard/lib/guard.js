@@ -17,9 +17,8 @@ import { fileURLToPath } from 'node:url';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export const PLUGIN_NAME = 'agent-guard';
-export const PLUGIN_ID = 'agent-guard@subagent-budget-tools';
-export const LEGACY_PLUGIN_ID = 'subagent-budget-guard@subagent-budget-tools';
+export const PLUGIN_NAME = 'subagent-cap';
+export const PLUGIN_ID = 'subagent-cap@subagent-tools';
 
 export const DEFAULT_CONFIG = Object.freeze({
   max_concurrent_subagents: 0,
@@ -88,9 +87,7 @@ function readSettingsOptions(env) {
   try {
     const text = readFileSync(settingsPath, 'utf8');
     const settings = JSON.parse(text.replace(/^\uFEFF/, ''));
-    const options =
-      settings?.pluginConfigs?.[PLUGIN_ID]?.options ||
-      settings?.pluginConfigs?.[LEGACY_PLUGIN_ID]?.options;
+    const options = settings?.pluginConfigs?.[PLUGIN_ID]?.options;
     return isPlainObject(options) ? options : {};
   } catch (error) {
     if (error.code === 'ENOENT') return {};
@@ -760,7 +757,7 @@ export function formatReport(report) {
   const { state, config, summary } = report;
   const fiveHour = state.rateLimits.fiveHour;
   const lines = [
-    `Agent Guard report for ${report.sessionId}`,
+    `Subagent Cap report for ${report.sessionId}`,
     `Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'}`,
     `Subagents: allowed ${state.subagents.allowed}, denied ${state.subagents.denied}, active ${state.subagents.active}, lifecycle starts ${state.subagents.lifecycleStarted}, lifecycle stops ${state.subagents.lifecycleStopped}`,
     `Verified usage: ${summary.verifiedTokenLabel}, ${state.subagents.totalToolUseCount} subagent tool calls, ${state.subagents.totalDurationMs} ms`,
@@ -776,7 +773,7 @@ export function formatReport(report) {
     );
   } else {
     lines.push(
-      '5-hour latest: unavailable. Run /agent-guard:init so the statusLine bridge can capture rate_limits.five_hour.used_percentage.'
+      '5-hour latest: unavailable. Run /subagent-cap:init so the statusLine bridge can capture rate_limits.five_hour.used_percentage.'
     );
   }
 
@@ -822,12 +819,9 @@ function applySetupPluginConfig(
     settings.pluginConfigs = {};
   }
 
-  const legacyEntry = isPlainObject(settings.pluginConfigs[LEGACY_PLUGIN_ID])
-    ? settings.pluginConfigs[LEGACY_PLUGIN_ID]
-    : {};
   const currentEntry = isPlainObject(settings.pluginConfigs[pluginId])
     ? settings.pluginConfigs[pluginId]
-    : legacyEntry;
+    : {};
   const currentOptions = isPlainObject(currentEntry.options)
     ? currentEntry.options
     : {};
@@ -846,10 +840,6 @@ function applySetupPluginConfig(
     ...currentEntry,
     options: nextOptions
   };
-  if (pluginId !== LEGACY_PLUGIN_ID) {
-    delete settings.pluginConfigs[LEGACY_PLUGIN_ID];
-  }
-
   return nextOptions;
 }
 

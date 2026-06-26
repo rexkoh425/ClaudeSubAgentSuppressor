@@ -15,7 +15,7 @@ const CONFIG_KEY_SET = new Set(CONFIG_KEYS);
 
 function usage() {
   return [
-    'Usage: agent-guard init [--defaults] [--interactive] [--config key=value ...]',
+    'Usage: subagent-cap init [--defaults] [--interactive] [--config key=value ...]',
     '',
     'Config keys:',
     ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
@@ -121,7 +121,7 @@ async function main() {
 
   process.stdout.write(
     [
-      'Agent Guard statusLine bridge installed.',
+      'Subagent Cap statusLine bridge installed.',
       'Plugin config applied:',
       `  max_concurrent_subagents=${result.pluginConfigOptions.max_concurrent_subagents}`,
       `  max_subagent_tokens_per_session=${result.pluginConfigOptions.max_subagent_tokens_per_session}`,

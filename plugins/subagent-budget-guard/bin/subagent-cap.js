@@ -22,16 +22,16 @@ const COMMANDS = Object.freeze({
 
 function usage() {
   return [
-    'Usage: agent-guard <command> [options]',
+    'Usage: subagent-cap <command> [options]',
     '',
     'Commands:',
     ...Object.entries(COMMANDS).map(([name, info]) => `  ${name.padEnd(8)} ${info.help}`),
     '',
     'Examples:',
-    '  agent-guard init',
-    '  agent-guard init --defaults',
-    '  agent-guard status',
-    '  agent-guard doctor --offline'
+    '  subagent-cap init',
+    '  subagent-cap init --defaults',
+    '  subagent-cap status',
+    '  subagent-cap doctor --offline'
   ].join('\n');
 }
 

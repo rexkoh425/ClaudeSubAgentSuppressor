@@ -1,6 +1,6 @@
 {
   "name": "@rex_koh/subagent-budget-guard",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Claude Code plugin that blocks subagents by default, records verified subagent usage, and enforces 5-hour usage budgets.",
   "license": "MIT",
   "author": "ClaudeSubAgentSuppressor",
@@ -32,7 +32,7 @@
     "LICENSE"
   ],
   "bin": {
-    "agent-guard": "bin/agent-guard.js"
+    "subagent-cap": "bin/subagent-cap.js"
   },
   "publishConfig": {
     "access": "public"
@@ -41,7 +41,7 @@
     "test": "node --test test/*.test.js",
     "verify:offline": "node bin/verify.js --offline",
     "verify:live": "node bin/verify.js --live",
-    "prepack": "node --check bin/hook.js && node --check bin/statusline.js && node --check bin/setup.js && node --check bin/report.js && node --check bin/verify.js && node --check bin/agent-guard.js && node --check lib/guard.js && node --check lib/verifier.js"
+    "prepack": "node --check bin/hook.js && node --check bin/statusline.js && node --check bin/setup.js && node --check bin/report.js && node --check bin/verify.js && node --check bin/subagent-cap.js && node --check lib/guard.js && node --check lib/verifier.js"
   },
   "engines": {
     "node": ">=20"
