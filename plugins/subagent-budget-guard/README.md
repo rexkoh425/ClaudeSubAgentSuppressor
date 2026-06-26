@@ -24,7 +24,10 @@ Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a 
 npm install -g @rex_koh/subagent-budget-guard
 subagent-cap doctor --offline
 subagent-cap status
+sub-agent-view
 ```
+
+`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, and tool-call count. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as `subagent-cap view`.
 
 Maintainer publish command:
 

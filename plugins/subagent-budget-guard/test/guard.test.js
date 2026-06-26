@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import {
   DEFAULT_CONFIG,
   buildReport,
+  formatSubagentView,
   getPluginRoot,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
@@ -231,6 +232,55 @@ test('PostToolUse Agent records verified subagent tokens and metadata', async ()
     assert.equal(report.state.subagents.totalToolUseCount, 7);
     assert.equal(report.state.subagents.runs[0].verified, true);
     assert.equal(report.summary.verifiedTokenLabel, '12,450 verified tokens');
+  });
+});
+
+test('formatSubagentView lists spawned subagents with tokens and duration', async () => {
+  await withTempEnv(async (env) => {
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-view',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Alpha analysis', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-alpha',
+          resolvedModel: 'claude-sonnet',
+          totalTokens: 1234,
+          totalToolUseCount: 2,
+          totalDurationMs: 1500
+        }
+      },
+      env
+    );
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-view',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Background scrape', subagent_type: 'Research' },
+        tool_response: {
+          status: 'async_launched',
+          agentId: 'agent-bg',
+          totalDurationMs: 0
+        }
+      },
+      env
+    );
+
+    const report = await buildReport('session-view', env);
+    const output = formatSubagentView(report);
+
+    assert.match(output, /Sub-agent view for session-view/);
+    assert.match(output, /Spawned subagents: 2/);
+    assert.match(output, /Verified tokens: 1,234/);
+    assert.match(output, /#1 completed Explore "Alpha analysis"/);
+    assert.match(output, /tokens: 1,234 verified/);
+    assert.match(output, /duration: 1\.5s/);
+    assert.match(output, /model: claude-sonnet/);
+    assert.match(output, /#2 async_launched Research "Background scrape"/);
+    assert.match(output, /tokens: pending/);
   });
 });
 

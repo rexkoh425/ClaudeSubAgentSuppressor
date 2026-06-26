@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.4.0', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.0', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -172,6 +172,7 @@ export async function runOfflineVerification({
       'bin/statusline.js',
       'bin/setup.js',
       'bin/report.js',
+      'bin/view.js',
       'bin/verify.js',
       'lib/guard.js',
       'lib/verifier.js',

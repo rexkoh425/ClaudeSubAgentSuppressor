@@ -780,6 +780,39 @@ export function formatReport(report) {
   return lines.join('\n');
 }
 
+function formatDuration(ms) {
+  const value = Number(ms || 0);
+  if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
+  return `${value}ms`;
+}
+
+export function formatSubagentView(report) {
+  const runs = report.state.subagents.runs;
+  const lines = [
+    `Sub-agent view for ${report.sessionId}`,
+    `Spawned subagents: ${runs.length}`,
+    `Verified tokens: ${formatCount(report.state.subagents.verifiedTokens)}`,
+    `Total duration: ${formatDuration(report.state.subagents.totalDurationMs)}`
+  ];
+
+  if (runs.length === 0) {
+    lines.push('No subagents recorded for this session.');
+    return lines.join('\n');
+  }
+
+  for (const [index, run] of runs.entries()) {
+    const type = run.subagentType || 'unknown';
+    const description = run.description ? ` "${run.description}"` : '';
+    lines.push(`#${index + 1} ${run.status} ${type}${description}`);
+    lines.push(`  tokens: ${run.verified ? `${formatCount(run.totalTokens)} verified` : 'pending'}`);
+    lines.push(`  duration: ${formatDuration(run.totalDurationMs)}`);
+    lines.push(`  model: ${run.resolvedModel || 'unknown'}`);
+    lines.push(`  tools: ${Number(run.totalToolUseCount || 0)}`);
+  }
+
+  return lines.join('\n');
+}
+
 function quoteShellArg(value) {
   const normalized = String(value).replace(/\\/g, '/').replace(/"/g, '\\"');
   return `"${normalized}"`;

@@ -14,6 +14,10 @@ const COMMANDS = Object.freeze({
     script: 'report.js',
     help: 'show the current guard report'
   },
+  view: {
+    script: 'view.js',
+    help: 'show recorded subagent tokens and duration'
+  },
   doctor: {
     script: 'verify.js',
     help: 'verify the install without spending Claude quota'
@@ -31,6 +35,7 @@ function usage() {
     '  subagent-cap init',
     '  subagent-cap init --defaults',
     '  subagent-cap status',
+    '  subagent-cap view',
     '  subagent-cap doctor --offline'
   ].join('\n');
 }
