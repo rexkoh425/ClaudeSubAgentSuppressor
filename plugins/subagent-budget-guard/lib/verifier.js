@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.1', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.2', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -151,6 +151,7 @@ export async function runOfflineVerification({
     const requiredEvents = [
       'PreToolUse',
       'PostToolUse',
+      'PostToolBatch',
       'SubagentStart',
       'SubagentStop',
       'TaskCreated',

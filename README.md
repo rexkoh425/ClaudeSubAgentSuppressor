@@ -7,6 +7,7 @@ Marketplace-ready Claude Code plugin that guards subagent usage, records verifie
 - Blocks new `Agent` tool subagents before they run.
 - Records agent-team task creation and completion events.
 - Records verified subagent token totals from completed `Agent` tool responses.
+- Queues subagent launches that fail only because the concurrency cap is already full, then reminds Claude to retry the highest-priority queued item when capacity is available.
 - Warns Claude to stop using subagents when verified subagent token usage reaches the configured warning threshold.
 - Cross-checks actual subagent lifecycle events with `SubagentStart` and `SubagentStop`.
 - Captures Claude Code `rate_limits.five_hour.used_percentage` through a one-time statusLine bridge.
@@ -126,7 +127,7 @@ The plugin reads these settings from `~/.claude/settings.json` under `pluginConf
 | `absolute_five_hour_ceiling_percent` | `95` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |
 | `enforcement_enabled` | `true` | `true` | Set false to record without blocking. |
 
-Claude Code reports `Agent.totalTokens` after an `Agent` call completes, so token enforcement is based on verified completed subagent runs. The plugin cannot interrupt a still-running subagent mid-token because Claude Code does not expose a live per-token subagent stream to hooks.
+Claude Code reports `Agent.totalTokens` after an `Agent` call completes, so token enforcement is based on verified completed subagent runs. The plugin cannot interrupt a still-running subagent mid-token because Claude Code does not expose a live per-token subagent stream to hooks. Queue retry reminders are advisory context injected after tool batches or on the next user prompt; hooks cannot autonomously launch a subagent after `SubagentStop`.
 
 ## Usage
 
@@ -142,7 +143,7 @@ View saved subagent activity after a session:
 /sub-agent-view
 ```
 
-`/sub-agent-view` shows how many subagents were recorded, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
+`/sub-agent-view` shows how many subagents were recorded, queued subagents waiting for retry, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
 
 Use the npm helper directly when you need a specific saved session or JSON output:
 
@@ -150,6 +151,8 @@ Use the npm helper directly when you need a specific saved session or JSON outpu
 sub-agent-view --session <session-id>
 sub-agent-view --json
 ```
+
+The queue stores the original full subagent prompt locally so Claude can retry the same work later, but the default text view shows only queue id, type, description, priority, attempts, and queued time. Use JSON output only when you need the full stored queue payload.
 
 Run offline verification:
 

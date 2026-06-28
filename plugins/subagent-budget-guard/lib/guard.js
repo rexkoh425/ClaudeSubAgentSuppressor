@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { constants as fsConstants, readFileSync } from 'node:fs';
 import {
   access,
@@ -186,6 +187,10 @@ function initialState(sessionId) {
       tokenBudgetWarnings: 0,
       tokenBudgetExceeded: false,
       lastTokenBudgetNoticeAt: null,
+      queued: 0,
+      queueLaunched: 0,
+      queueNotices: 0,
+      queue: [],
       runs: []
     },
     agentTeam: {
@@ -379,6 +384,196 @@ function formatCount(value) {
   return Number(value || 0).toLocaleString('en-US');
 }
 
+function normalizeText(value) {
+  return String(value || '').trim();
+}
+
+function agentIdentity(input) {
+  const toolInput = input?.tool_input || {};
+  return {
+    description: normalizeText(toolInput.description),
+    subagentType: normalizeText(toolInput.subagent_type),
+    prompt: normalizeText(toolInput.prompt)
+  };
+}
+
+function agentFingerprint(input) {
+  const identity = agentIdentity(input);
+  return createHash('sha256')
+    .update(JSON.stringify(identity))
+    .digest('hex');
+}
+
+function agentQueuePriority(input) {
+  const identity = agentIdentity(input);
+  const text = `${identity.description} ${identity.subagentType} ${identity.prompt}`.toLowerCase();
+
+  if (/(urgent|critical|blocker|high[- ]priority|priority|asap|production)/.test(text)) {
+    return 100;
+  }
+
+  if (/(security|auth|bug|failure|failing|fix|test|review)/.test(text)) {
+    return 50;
+  }
+
+  return 0;
+}
+
+function queuedAgentSummary(item) {
+  const type = item.subagentType || 'unknown';
+  const description = item.description || 'no description';
+  return `${type} "${description}"`;
+}
+
+function findQueuedAgentIndex(state, fingerprint) {
+  return state.subagents.queue.findIndex((item) => item.fingerprint === fingerprint);
+}
+
+function compareQueuedAgents(a, b) {
+  const priorityDiff = Number(b.priority || 0) - Number(a.priority || 0);
+  if (priorityDiff !== 0) return priorityDiff;
+  return String(a.queuedAt || '').localeCompare(String(b.queuedAt || ''));
+}
+
+function sortQueuedAgents(state) {
+  state.subagents.queue.sort(compareQueuedAgents);
+}
+
+function queueConcurrencyDeniedAgent(state, input, reason) {
+  const fingerprint = agentFingerprint(input);
+  const existingIndex = findQueuedAgentIndex(state, fingerprint);
+  const identity = agentIdentity(input);
+
+  state.subagents.queued += 1;
+
+  if (existingIndex !== -1) {
+    const existing = state.subagents.queue[existingIndex];
+    existing.attempts += 1;
+    existing.lastQueuedAt = nowIso();
+    existing.priority = Math.max(existing.priority || 0, agentQueuePriority(input));
+    existing.reason = reason;
+    sortQueuedAgents(state);
+    pushEvent(state, {
+      type: 'agent-queue-duplicate',
+      queueId: existing.queueId,
+      attempts: existing.attempts,
+      reason
+    });
+    return existing;
+  }
+
+  const queueId = `queue-${fingerprint.slice(0, 12)}`;
+  const item = {
+    queueId,
+    fingerprint,
+    status: 'queued',
+    priority: agentQueuePriority(input),
+    attempts: 1,
+    queuedAt: nowIso(),
+    lastQueuedAt: nowIso(),
+    lastNotifiedAt: null,
+    notifyCount: 0,
+    reason,
+    description: identity.description || null,
+    subagentType: identity.subagentType || null,
+    prompt: identity.prompt || null
+  };
+
+  state.subagents.queue.push(item);
+  sortQueuedAgents(state);
+  pushEvent(state, {
+    type: 'agent-queued',
+    queueId,
+    priority: item.priority,
+    reason,
+    description: item.description,
+    subagentType: item.subagentType
+  });
+  return item;
+}
+
+function removeMatchingQueuedAgent(state, input) {
+  const index = findQueuedAgentIndex(state, agentFingerprint(input));
+  if (index === -1) return null;
+
+  const [item] = state.subagents.queue.splice(index, 1);
+  state.subagents.queueLaunched += 1;
+  pushEvent(state, {
+    type: 'agent-queue-launched',
+    queueId: item.queueId,
+    description: item.description,
+    subagentType: item.subagentType
+  });
+  return item;
+}
+
+function nextQueuedAgent(state) {
+  const queued = [...state.subagents.queue].filter((item) => item.status === 'queued');
+  queued.sort(compareQueuedAgents);
+  return queued[0] || null;
+}
+
+function canRetryQueuedAgent(state, config) {
+  return (
+    config.enforcement_enabled &&
+    config.max_concurrent_subagents > 0 &&
+    state.subagents.active < config.max_concurrent_subagents &&
+    state.subagents.queue.length > 0
+  );
+}
+
+function formatQueuedAgentContext(item, state, config) {
+  const available = Math.max(0, config.max_concurrent_subagents - state.subagents.active);
+  return [
+    'Queued subagent ready to retry.',
+    `Queue id: ${item.queueId}`,
+    `Priority: ${Number(item.priority || 0)}`,
+    `Attempts: ${Number(item.attempts || 0)}`,
+    `Concurrency available: ${available}/${config.max_concurrent_subagents}`,
+    `Subagent type: ${item.subagentType || 'unknown'}`,
+    `Description: ${item.description || 'no description'}`,
+    'Retry this queued Agent task before starting new lower-priority subagent work.',
+    'Use the full original prompt below when retrying:',
+    item.prompt || '(empty prompt)'
+  ].join('\n');
+}
+
+async function buildQueuedAgentNotice(sessionId, env, hookEventName) {
+  const config = loadConfig(env);
+  let context = null;
+
+  await updateState(sessionId, env, (state) => {
+    if (!canRetryQueuedAgent(state, config)) return state;
+
+    const item = nextQueuedAgent(state);
+    if (!item) return state;
+
+    item.notifyCount = Number(item.notifyCount || 0) + 1;
+    item.lastNotifiedAt = nowIso();
+    state.subagents.queueNotices += 1;
+    context = formatQueuedAgentContext(item, state, config);
+    pushEvent(state, {
+      type: 'agent-queue-notice',
+      queueId: item.queueId,
+      hookEventName,
+      notifyCount: item.notifyCount
+    });
+    return state;
+  });
+
+  if (!context) return null;
+  return {
+    exitCode: 0,
+    stdout: {
+      hookSpecificOutput: {
+        hookEventName,
+        additionalContext: context
+      }
+    },
+    stderr: ''
+  };
+}
+
 function subagentTokenBudgetStatus(state, config) {
   const limit = config.max_subagent_tokens_per_session;
   if (!limit || limit <= 0) return null;
@@ -422,21 +617,31 @@ function subagentTokenBudgetDecision(state, config, { includeWarning = true } = 
   return null;
 }
 
-function agentDenyReason(state, config) {
+function agentDenyDecision(state, config) {
   if (!config.enforcement_enabled) return null;
 
   const budgetReason = fiveHourBudgetDecision(state, config);
-  if (budgetReason) return budgetReason;
+  if (budgetReason) {
+    return { reason: budgetReason, queueable: false };
+  }
 
   const tokenBudgetReason = subagentTokenBudgetDecision(state, config);
-  if (tokenBudgetReason) return tokenBudgetReason.reason;
+  if (tokenBudgetReason) {
+    return { reason: tokenBudgetReason.reason, queueable: false };
+  }
 
   if (config.max_concurrent_subagents === 0) {
-    return 'Subagent launch denied: max_concurrent_subagents is 0.';
+    return {
+      reason: 'Subagent launch denied: max_concurrent_subagents is 0.',
+      queueable: false
+    };
   }
 
   if (state.subagents.active >= config.max_concurrent_subagents) {
-    return `Subagent launch denied: max_concurrent_subagents ${config.max_concurrent_subagents} already reached.`;
+    return {
+      reason: `Subagent launch queued: max_concurrent_subagents ${config.max_concurrent_subagents} already reached. Retry this queued agent when active subagents drop below the cap.`,
+      queueable: true
+    };
   }
 
   return null;
@@ -446,12 +651,18 @@ export async function handlePreToolUseAgent(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const config = loadConfig(env);
   let reason = null;
+  let queuedItem = null;
 
   await updateState(sessionId, env, (state) => {
     state.subagents.requested += 1;
-    reason = agentDenyReason(state, config);
-    if (reason) {
+    const decision = agentDenyDecision(state, config);
+    reason = decision?.reason || null;
+    if (decision) {
       state.subagents.denied += 1;
+      if (decision.queueable) {
+        queuedItem = queueConcurrencyDeniedAgent(state, input, reason);
+        reason = `${reason} Queue id: ${queuedItem.queueId}.`;
+      }
       pushEvent(state, {
         type: 'agent-denied',
         reason,
@@ -459,9 +670,11 @@ export async function handlePreToolUseAgent(input, env = process.env) {
         subagentType: input?.tool_input?.subagent_type || null
       });
     } else {
+      const launchedQueuedItem = removeMatchingQueuedAgent(state, input);
       state.subagents.allowed += 1;
       pushEvent(state, {
         type: 'agent-allowed',
+        queueId: launchedQueuedItem?.queueId || null,
         description: input?.tool_input?.description || null,
         subagentType: input?.tool_input?.subagent_type || null
       });
@@ -567,6 +780,13 @@ export async function handlePostToolUseAgent(input, env = process.env) {
   }
 
   return { exitCode: 0, stdout: null, stderr: '' };
+}
+
+export async function handlePostToolBatch(input, env = process.env) {
+  const sessionId = input?.session_id || 'unknown-session';
+  const notice = await buildQueuedAgentNotice(sessionId, env, 'PostToolBatch');
+
+  return notice || { exitCode: 0, stdout: null, stderr: '' };
 }
 
 export async function handleSubagentStart(input, env = process.env) {
@@ -676,7 +896,8 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   const reason = fiveHourBudgetDecision(state, config);
 
   if (!reason) {
-    return { exitCode: 0, stdout: null, stderr: '' };
+    const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit');
+    return notice || { exitCode: 0, stdout: null, stderr: '' };
   }
 
   await updateState(sessionId, env, (nextState) => {
@@ -788,14 +1009,16 @@ function formatDuration(ms) {
 
 export function formatSubagentView(report) {
   const runs = report.state.subagents.runs;
+  const queued = report.state.subagents.queue || [];
   const lines = [
     `Sub-agent view for ${report.sessionId}`,
     `Spawned subagents: ${runs.length}`,
+    `Queued subagents: ${queued.length}`,
     `Verified tokens: ${formatCount(report.state.subagents.verifiedTokens)}`,
     `Total duration: ${formatDuration(report.state.subagents.totalDurationMs)}`
   ];
 
-  if (runs.length === 0) {
+  if (runs.length === 0 && queued.length === 0) {
     lines.push('No subagents recorded for this session.');
     return lines.join('\n');
   }
@@ -808,6 +1031,15 @@ export function formatSubagentView(report) {
     lines.push(`  duration: ${formatDuration(run.totalDurationMs)}`);
     lines.push(`  model: ${run.resolvedModel || 'unknown'}`);
     lines.push(`  tools: ${Number(run.totalToolUseCount || 0)}`);
+  }
+
+  if (queued.length > 0) {
+    lines.push('Queued:');
+    for (const item of queued) {
+      lines.push(`- ${item.queueId} ${queuedAgentSummary(item)}`);
+      lines.push(`  priority: ${Number(item.priority || 0)}, attempts: ${Number(item.attempts || 0)}`);
+      lines.push(`  queued_at: ${item.queuedAt || 'unknown'}`);
+    }
   }
 
   return lines.join('\n');

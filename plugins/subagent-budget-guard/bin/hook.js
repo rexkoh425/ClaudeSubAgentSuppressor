@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  handlePostToolBatch,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
   handleSubagentStart,
@@ -30,6 +31,7 @@ function emit(result) {
 
 const handlers = {
   'pretool-agent': handlePreToolUseAgent,
+  'posttool-batch': handlePostToolBatch,
   'posttool-agent': handlePostToolUseAgent,
   'subagent-start': handleSubagentStart,
   'subagent-stop': handleSubagentStop,

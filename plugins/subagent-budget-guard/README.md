@@ -15,7 +15,7 @@ Recommended Claude Code install:
 
 After `/subagent-cap:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
 
-`/sub-agent-view` can be run after a session to display how many subagents were spawned, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
+`/sub-agent-view` can be run after a session to display how many subagents were spawned, queued subagents waiting for retry, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
 
 ## NPM Package
 
@@ -30,7 +30,9 @@ subagent-cap status
 sub-agent-view
 ```
 
-`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, and tool-call count. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as the Claude command `/sub-agent-view` and the npm alias `subagent-cap view`.
+`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, tool-call count, and queued retry items. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as the Claude command `/sub-agent-view` and the npm alias `subagent-cap view`.
+
+When an `Agent` launch fails only because `max_concurrent_subagents` is already reached, the plugin stores that subagent in a local retry queue with the full original prompt. The default text view does not print full queued prompts. Once active subagents drop below the cap, the plugin injects a reminder for the highest-priority queued item after a tool batch or on the next user prompt so Claude can retry it before lower-priority new work. Hooks cannot autonomously launch a subagent after `SubagentStop`; the queue is surfaced as context for Claude's next action.
 
 Maintainer publish command:
 

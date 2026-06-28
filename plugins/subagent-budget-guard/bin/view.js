@@ -17,6 +17,7 @@ async function main() {
     spawnedSubagents: report.state.subagents.runs.length,
     verifiedTokens: report.state.subagents.verifiedTokens,
     totalDurationMs: report.state.subagents.totalDurationMs,
+    queuedSubagents: report.state.subagents.queue || [],
     subagents: report.state.subagents.runs
   };
 

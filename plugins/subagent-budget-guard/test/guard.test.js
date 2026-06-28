@@ -12,6 +12,7 @@ import {
   buildReport,
   formatSubagentView,
   getPluginRoot,
+  handlePostToolBatch,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
   handleSubagentStart,
@@ -94,7 +95,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.1';
+  const expectedVersion = '0.5.2';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -131,8 +132,9 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
   const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
   const command = await readFile(commandPath, 'utf8');
 
+  assert.match(command, /allowed-tools: Bash\(node:\*\)/);
   assert.match(command, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/view\.js"/);
-  assert.match(command, /Show the command output verbatim/i);
+  assert.match(command, /!\`node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/view\.js" \$ARGUMENTS\`/);
 });
 
 test('npm package ships Claude command files', async () => {
@@ -239,6 +241,130 @@ test('SubagentStart and SubagentStop cross-check active lifecycle counts', async
   });
 });
 
+test('PreToolUse Agent queues concurrency-denied subagents with full prompt and de-duplicates retries', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue');
+    queuedInput.tool_input.description = 'Urgent auth follow-up';
+    queuedInput.tool_input.prompt = 'Investigate the auth failure and preserve this exact queued prompt.';
+
+    const first = await handlePreToolUseAgent(queuedInput, env);
+    const second = await handlePreToolUseAgent(queuedInput, env);
+
+    assert.equal(first.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(first.stdout.hookSpecificOutput.permissionDecisionReason, /queued/i);
+    assert.equal(second.stdout.hookSpecificOutput.permissionDecision, 'deny');
+
+    const report = await buildReport('session-queue', env);
+    assert.equal(report.state.subagents.denied, 2);
+    assert.equal(report.state.subagents.queued, 2);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].attempts, 2);
+    assert.equal(report.state.subagents.queue[0].prompt, queuedInput.tool_input.prompt);
+    assert.equal(report.state.subagents.queue[0].description, 'Urgent auth follow-up');
+    assert.equal(report.state.subagents.queue[0].priority, 100);
+  });
+});
+
+test('PreToolUse Agent launches and removes a matching queued subagent when capacity is free', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-launch',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-launch');
+    queuedInput.tool_input.description = 'Queued repo analysis';
+    queuedInput.tool_input.prompt = 'Analyze the repository after capacity is free.';
+    await handlePreToolUseAgent(queuedInput, env);
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-launch',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const result = await handlePreToolUseAgent(queuedInput, env);
+    const report = await buildReport('session-queue-launch', env);
+
+    assert.equal(result.stdout, null);
+    assert.equal(report.state.subagents.allowed, 1);
+    assert.equal(report.state.subagents.queue.length, 0);
+    assert.equal(report.state.subagents.queueLaunched, 1);
+  });
+});
+
+test('PostToolBatch injects highest-priority queued subagent when capacity is available', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-context',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const normalInput = agentInput('session-queue-context');
+    normalInput.tool_input.description = 'Routine docs scan';
+    normalInput.tool_input.prompt = 'Scan docs later.';
+    await handlePreToolUseAgent(normalInput, env);
+
+    const urgentInput = agentInput('session-queue-context');
+    urgentInput.tool_input.description = 'Urgent production failure';
+    urgentInput.tool_input.prompt = 'Use this full urgent prompt when capacity is available.';
+    await handlePreToolUseAgent(urgentInput, env);
+
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-context',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const result = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-context',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Urgent production failure/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Use this full urgent prompt/);
+    assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /Routine docs scan/);
+
+    const report = await buildReport('session-queue-context', env);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+  });
+});
+
 test('PostToolUse Agent records verified subagent tokens and metadata', async () => {
   await withTempEnv(async (env) => {
     await handlePostToolUseAgent(
@@ -320,6 +446,32 @@ test('formatSubagentView lists spawned subagents with tokens and duration', asyn
     assert.match(output, /model: claude-sonnet/);
     assert.match(output, /#2 async_launched Research "Background scrape"/);
     assert.match(output, /tokens: pending/);
+  });
+});
+
+test('formatSubagentView lists queued subagents without printing full prompts by default', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-view-queue',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    const queuedInput = agentInput('session-view-queue');
+    queuedInput.tool_input.description = 'Queued security review';
+    queuedInput.tool_input.prompt = 'SECRET FULL PROMPT SHOULD NOT PRINT IN TEXT VIEW';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    const output = formatSubagentView(await buildReport('session-view-queue', env));
+
+    assert.match(output, /Queued subagents: 1/);
+    assert.match(output, /Queued security review/);
+    assert.match(output, /priority: 50/);
+    assert.doesNotMatch(output, /SECRET FULL PROMPT/);
   });
 });
 
