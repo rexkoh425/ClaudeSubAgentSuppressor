@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,6 +28,35 @@ import {
 import { runOfflineVerification } from '../lib/verifier.js';
 
 const execFileAsync = promisify(execFile);
+
+function execNodeWithInput(args, input, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: path.resolve('.'),
+      env: {
+        ...process.env,
+        ...(options.env || {})
+      },
+      windowsHide: true
+    });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+    child.stdin.end(input);
+  });
+}
 
 async function withTempEnv(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sbg-test-'));
@@ -95,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.2';
+  const expectedVersion = '0.5.3';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -143,6 +172,58 @@ test('npm package ships Claude command files', async () => {
   );
 
   assert.ok(packageJson.files.includes('commands/'));
+});
+
+test('hook CLI accepts BOM-prefixed JSON from stdin', async () => {
+  await withTempEnv(async (env) => {
+    const result = await execNodeWithInput(
+      [path.resolve('plugins/subagent-budget-guard/bin/hook.js'), 'pretool-agent'],
+      `\uFEFF${JSON.stringify(agentInput('session-hook-bom'))}`,
+      { env }
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, '');
+
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+
+    const report = await buildReport('session-hook-bom', env);
+    assert.equal(report.state.subagents.requested, 1);
+    assert.equal(report.state.subagents.denied, 1);
+  });
+});
+
+test('statusline CLI accepts BOM-prefixed JSON from stdin', async () => {
+  await withTempEnv(async (env) => {
+    const result = await execNodeWithInput(
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/statusline.js'),
+        '--data',
+        env.CLAUDE_PLUGIN_DATA
+      ],
+      `\uFEFF${JSON.stringify({
+        session_id: 'session-statusline-bom',
+        rate_limits: {
+          five_hour: {
+            used_percentage: 12.5,
+            resets_at: 123456
+          }
+        }
+      })}`,
+      { env }
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.match(result.stdout, /SBG agents 0\/0/);
+    assert.match(result.stdout, /5h 12\.5%/);
+    assert.doesNotMatch(result.stdout, /SBG error/);
+
+    const report = await buildReport('session-statusline-bom', env);
+    assert.equal(report.state.rateLimits.fiveHour.latestUsedPercentage, 12.5);
+  });
 });
 
 test('loadConfig reads setup options from Claude settings', async () => {

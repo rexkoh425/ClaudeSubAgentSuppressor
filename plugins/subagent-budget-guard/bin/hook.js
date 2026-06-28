@@ -16,7 +16,7 @@ async function readStdin() {
   for await (const chunk of process.stdin) {
     input += chunk;
   }
-  return input ? JSON.parse(input) : {};
+  return input ? JSON.parse(input.replace(/^\uFEFF/, '')) : {};
 }
 
 function emit(result) {
