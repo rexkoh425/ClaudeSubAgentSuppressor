@@ -102,6 +102,7 @@ test('loadConfig uses strict deny-by-default limits', () => {
   assert.equal('max_subagents_per_session' in config, false);
   assert.equal('max_agent_team_tasks_per_session' in config, false);
   assert.equal(config.max_concurrent_subagents, 0);
+  assert.equal(config.enforcement_mode, 'subagent_only');
   assert.equal(config.enforcement_enabled, true);
 });
 
@@ -111,6 +112,7 @@ test('recommended setup defaults use two subagents and tighter budget thresholds
   assert.equal(SETUP_CONFIG.subagent_token_warning_threshold_percent, 80);
   assert.equal(SETUP_CONFIG.session_five_hour_budget_percent, 10);
   assert.equal(SETUP_CONFIG.absolute_five_hour_ceiling_percent, 90);
+  assert.equal(SETUP_CONFIG.enforcement_mode, 'subagent_only');
   assert.equal(SETUP_CONFIG.enforcement_enabled, true);
 });
 
@@ -133,8 +135,8 @@ test('marketplace exposes the subagent-cap install name', async () => {
   assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
 });
 
-test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.10';
+test('release metadata is bumped for scoped enforcement mode', async () => {
+  const expectedVersion = '0.5.11';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -252,6 +254,7 @@ test('loadConfig reads setup options from Claude settings', async () => {
               subagent_token_warning_threshold_percent: 90,
               session_five_hour_budget_percent: 15,
               absolute_five_hour_ceiling_percent: 88,
+              enforcement_mode: 'session-budget',
               enforcement_enabled: false
             }
           }
@@ -266,6 +269,7 @@ test('loadConfig reads setup options from Claude settings', async () => {
     assert.equal(config.subagent_token_warning_threshold_percent, 90);
     assert.equal(config.session_five_hour_budget_percent, 15);
     assert.equal(config.absolute_five_hour_ceiling_percent, 88);
+    assert.equal(config.enforcement_mode, 'session_budget');
     assert.equal(config.enforcement_enabled, false);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
@@ -282,6 +286,55 @@ test('PreToolUse Agent denies subagent launches by default', async () => {
       result.stdout.hookSpecificOutput.permissionDecisionReason,
       /max_concurrent_subagents is 0/
     );
+  });
+});
+
+test('PreToolUse Agent blocks on five-hour budget in subagent-only mode', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-budget-default',
+        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-budget-default',
+        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handlePreToolUseAgent(
+      agentInput('session-agent-budget-default'),
+      env
+    );
+
+    assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /5-hour budget exhausted/
+    );
+  });
+});
+
+test('PreToolUse Agent records without blocking in observe mode', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_enforcement_mode = 'observe';
+
+    const result = await handlePreToolUseAgent(agentInput('session-observe'), env);
+    const report = await buildReport('session-observe', env);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, null);
+    assert.equal(report.state.subagents.requested, 1);
+    assert.equal(report.state.subagents.allowed, 1);
+    assert.equal(report.state.subagents.denied, 0);
+    assert.equal(report.state.subagents.launching, 0);
   });
 });
 
@@ -877,6 +930,63 @@ test('UserPromptSubmit does not repeat leased queued work on normal or continue 
   });
 });
 
+test('UserPromptSubmit does not initiate queued work when capacity is available', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    const sessionId = 'session-queue-user-no-init';
+    const firstInput = agentInput(sessionId);
+    firstInput.tool_use_id = 'toolu_first_user_no_init';
+    firstInput.tool_input.description = 'Subagent 1 greeting';
+    const queuedInput = agentInput(sessionId);
+    queuedInput.tool_use_id = 'toolu_queued_user_no_init';
+    queuedInput.tool_input.description = 'Subagent 2 greeting';
+    queuedInput.tool_input.prompt = 'Say exactly: "hello, i am subagent 2"';
+
+    const firstLaunch = await handlePreToolUseAgent(firstInput, env);
+    const queued = await handlePreToolUseAgent(queuedInput, env);
+    await handlePostToolUseAgent(
+      {
+        session_id: sessionId,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: firstInput.tool_input,
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-user-no-init-1',
+          totalTokens: 10,
+          totalDurationMs: 100
+        }
+      },
+      env
+    );
+
+    const promptResult = await handleUserPromptSubmit(
+      {
+        session_id: sessionId,
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'continue'
+      },
+      env
+    );
+    const batchResult = await handlePostToolBatch(
+      {
+        session_id: sessionId,
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.equal(firstLaunch.stdout, null);
+    assert.equal(queued.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(promptResult.exitCode, 0);
+    assert.equal(promptResult.stdout, null);
+    assert.match(
+      batchResult.stdout.hookSpecificOutput.additionalContext,
+      /^SUBAGENT_QUEUE_DISPATCH/m
+    );
+  });
+});
+
 test('PreToolUse Agent preserves queued order when capacity is available', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
@@ -1266,6 +1376,40 @@ test('UserPromptSubmit allows normal prompts when subagent token cap is reached'
   });
 });
 
+test('UserPromptSubmit allows normal prompts by default when five-hour budget is exhausted', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-budget-default-pass',
+        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-budget-default-pass',
+        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handleUserPromptSubmit(
+      {
+        session_id: 'session-budget-default-pass',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'continue with normal work'
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, null);
+    assert.equal(result.stderr, '');
+  });
+});
+
 test('PostToolUse Agent marks background launches as lifecycle-counted but not token-verified', async () => {
   await withTempEnv(async (env) => {
     await handlePostToolUseAgent(
@@ -1291,8 +1435,9 @@ test('PostToolUse Agent marks background launches as lifecycle-counted but not t
   });
 });
 
-test('UserPromptSubmit blocks when five-hour session budget delta is exhausted', async () => {
+test('UserPromptSubmit blocks when five-hour session budget mode is opted in and exhausted', async () => {
   await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_enforcement_mode = 'session_budget';
     env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
 
     await updateRateLimitFromStatusLine(
@@ -1366,6 +1511,81 @@ test('TaskCreated records agent-team tasks without count-based suppression', asy
     const report = await buildReport('session-task', env);
     assert.equal(report.state.agentTeam.created, 1);
     assert.equal(report.state.agentTeam.denied, 0);
+  });
+});
+
+test('TaskCreated records tasks by default when five-hour budget is exhausted', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-task-budget-default-pass',
+        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-task-budget-default-pass',
+        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handleTaskCreated(
+      {
+        session_id: 'session-task-budget-default-pass',
+        hook_event_name: 'TaskCreated',
+        task_id: 'task-budget-default',
+        task_subject: 'Normal work'
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, '');
+    const report = await buildReport('session-task-budget-default-pass', env);
+    assert.equal(report.state.agentTeam.created, 1);
+    assert.equal(report.state.agentTeam.denied, 0);
+  });
+});
+
+test('TaskCreated blocks when five-hour session budget mode is opted in and exhausted', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_enforcement_mode = 'session_budget';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-task-budget-session-block',
+        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-task-budget-session-block',
+        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handleTaskCreated(
+      {
+        session_id: 'session-task-budget-session-block',
+        hook_event_name: 'TaskCreated',
+        task_id: 'task-budget-session',
+        task_subject: 'Session-budget work'
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /5-hour budget exhausted/);
+    const report = await buildReport('session-task-budget-session-block', env);
+    assert.equal(report.state.agentTeam.created, 0);
+    assert.equal(report.state.agentTeam.denied, 1);
   });
 });
 
@@ -1490,6 +1710,7 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
         subagent_token_warning_threshold_percent: 80,
         session_five_hour_budget_percent: 10,
         absolute_five_hour_ceiling_percent: 90,
+        enforcement_mode: 'subagent_only',
         enforcement_enabled: true
       });
       assert.equal(result.pluginConfigApplied, true);
@@ -1515,8 +1736,15 @@ test('offline verifier validates plugin shape and simulated enforcement', async 
     assert.ok(
       result.checks.some(
         (check) =>
-          check.name === 'simulated-statusline-budget-blocks' &&
-          check.detail.startsWith('simulated check only:')
+          check.name === 'simulated-statusline-budget-default-passthrough' &&
+          check.detail.startsWith('default mode allowed prompt:')
+      )
+    );
+    assert.ok(
+      result.checks.some(
+        (check) =>
+          check.name === 'simulated-statusline-budget-session-mode-blocks' &&
+          check.detail.startsWith('session_budget check only:')
       )
     );
     assert.ok(result.checks.some((check) => check.name === 'setup-applies-plugin-config'));
@@ -1578,6 +1806,8 @@ test('setup CLI applies custom config values over recommended defaults', async (
         '--config',
         'absolute_five_hour_ceiling_percent=90',
         '--config',
+        'enforcement_mode=session_budget',
+        '--config',
         'enforcement_enabled=false'
       ],
       {
@@ -1603,6 +1833,7 @@ test('setup CLI applies custom config values over recommended defaults', async (
     assert.equal(options.subagent_token_warning_threshold_percent, 80);
     assert.equal(options.session_five_hour_budget_percent, 10);
     assert.equal(options.absolute_five_hour_ceiling_percent, 90);
+    assert.equal(options.enforcement_mode, 'session_budget');
     assert.equal(options.enforcement_enabled, false);
   } finally {
     await rm(homeDir, { recursive: true, force: true });

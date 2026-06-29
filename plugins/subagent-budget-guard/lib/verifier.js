@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.10', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.11', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -229,7 +229,7 @@ export async function runOfflineVerification({
     });
   });
 
-  await withCheck(result, 'simulated-statusline-budget-blocks', async () => {
+  await withCheck(result, 'simulated-statusline-budget-default-passthrough', async () => {
     return withIsolatedPluginEnv(env, root, async (baseEnv) => {
       const checkEnv = {
         ...baseEnv,
@@ -257,8 +257,42 @@ export async function runOfflineVerification({
         },
         checkEnv
       );
-      assert(output.stdout?.decision === 'block', 'prompt was not blocked');
-      return `simulated check only: ${output.stdout.reason}`;
+      assert(output.stdout === null, 'default mode blocked the prompt');
+      return 'default mode allowed prompt: subagent_only';
+    });
+  });
+
+  await withCheck(result, 'simulated-statusline-budget-session-mode-blocks', async () => {
+    return withIsolatedPluginEnv(env, root, async (baseEnv) => {
+      const checkEnv = {
+        ...baseEnv,
+        CLAUDE_PLUGIN_OPTION_enforcement_mode: 'session_budget',
+        CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent: '3'
+      };
+      await updateRateLimitFromStatusLine(
+        {
+          session_id: 'offline-budget-session',
+          rate_limits: { five_hour: { used_percentage: 10, resets_at: 1 } }
+        },
+        checkEnv
+      );
+      await updateRateLimitFromStatusLine(
+        {
+          session_id: 'offline-budget-session',
+          rate_limits: { five_hour: { used_percentage: 13.5, resets_at: 1 } }
+        },
+        checkEnv
+      );
+      const output = await handleUserPromptSubmit(
+        {
+          session_id: 'offline-budget-session',
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'continue'
+        },
+        checkEnv
+      );
+      assert(output.stdout?.decision === 'block', 'prompt was not blocked in session_budget mode');
+      return `session_budget check only: ${output.stdout.reason}`;
     });
   });
 

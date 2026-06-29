@@ -54,6 +54,7 @@ max_subagent_tokens_per_session=500000
 subagent_token_warning_threshold_percent=80
 session_five_hour_budget_percent=10
 absolute_five_hour_ceiling_percent=90
+enforcement_mode=subagent_only
 enforcement_enabled=true
 ```
 
@@ -74,7 +75,10 @@ subagent-cap init \
   --config subagent_token_warning_threshold_percent=80 \
   --config session_five_hour_budget_percent=10 \
   --config absolute_five_hour_ceiling_percent=90 \
+  --config enforcement_mode=subagent_only \
   --config enforcement_enabled=true
 ```
 
 `max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `80`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.
+
+`enforcement_mode=subagent_only` is the default and only blocks or queues `Agent` launches. Normal prompts and task creation continue even when the tracked 5-hour percentage exceeds the configured budget. Use `enforcement_mode=session_budget` only when you want the plugin to suppress broader session prompts/tasks after the 5-hour budget is exhausted, or `enforcement_mode=observe` to record usage without blocking.

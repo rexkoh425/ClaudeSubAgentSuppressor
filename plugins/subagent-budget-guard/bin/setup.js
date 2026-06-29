@@ -128,6 +128,7 @@ async function main() {
       `  subagent_token_warning_threshold_percent=${result.pluginConfigOptions.subagent_token_warning_threshold_percent}`,
       `  session_five_hour_budget_percent=${result.pluginConfigOptions.session_five_hour_budget_percent}`,
       `  absolute_five_hour_ceiling_percent=${result.pluginConfigOptions.absolute_five_hour_ceiling_percent}`,
+      `  enforcement_mode=${result.pluginConfigOptions.enforcement_mode}`,
       `  enforcement_enabled=${result.pluginConfigOptions.enforcement_enabled}`,
       `Settings: ${result.settingsPath}`,
       `Bridge state: ${result.bridgePath}`,

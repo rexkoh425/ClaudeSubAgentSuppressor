@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   subagent_token_warning_threshold_percent: 80,
   session_five_hour_budget_percent: 10,
   absolute_five_hour_ceiling_percent: 90,
+  enforcement_mode: 'subagent_only',
   enforcement_enabled: true
 });
 
@@ -37,6 +38,11 @@ export const SETUP_CONFIG = Object.freeze({
 });
 
 export const CONFIG_KEYS = Object.freeze(Object.keys(DEFAULT_CONFIG));
+export const ENFORCEMENT_MODES = Object.freeze([
+  'subagent_only',
+  'session_budget',
+  'observe'
+]);
 export const REMOVED_CONFIG_KEYS = Object.freeze([
   'max_subagents_per_session',
   'max_agent_team_tasks_per_session'
@@ -48,6 +54,7 @@ const QUEUE_DISPATCH_LEASE_TTL_MS = 300000;
 const NUMBER_KEYS = new Set(
   CONFIG_KEYS.filter((key) => typeof DEFAULT_CONFIG[key] === 'number')
 );
+const ENFORCEMENT_MODE_SET = new Set(ENFORCEMENT_MODES);
 
 function nowIso() {
   return new Date().toISOString();
@@ -70,6 +77,11 @@ function asBoolean(value, fallback) {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function asString(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return String(value).trim();
 }
 
 function envValue(env, key) {
@@ -107,11 +119,21 @@ function applyConfigValues(config, valueForKey) {
       config[key] = Math.max(0, asNumber(value, config[key]));
     } else if (typeof DEFAULT_CONFIG[key] === 'boolean') {
       config[key] = asBoolean(value, config[key]);
+    } else if (typeof DEFAULT_CONFIG[key] === 'string') {
+      config[key] = asString(value, config[key]);
     }
   }
 }
 
 function normalizeConfig(config) {
+  const enforcementMode = String(config.enforcement_mode || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_');
+  config.enforcement_mode = ENFORCEMENT_MODE_SET.has(enforcementMode)
+    ? enforcementMode
+    : DEFAULT_CONFIG.enforcement_mode;
+
   config.session_five_hour_budget_percent = Math.min(
     100,
     config.session_five_hour_budget_percent
@@ -126,6 +148,14 @@ function normalizeConfig(config) {
   );
 
   return config;
+}
+
+function subagentEnforcementEnabled(config) {
+  return config.enforcement_enabled && config.enforcement_mode !== 'observe';
+}
+
+function sessionBudgetEnforcementEnabled(config) {
+  return config.enforcement_enabled && config.enforcement_mode === 'session_budget';
 }
 
 export function loadConfig(env = process.env) {
@@ -370,12 +400,16 @@ export async function updateRateLimitFromStatusLine(input, env = process.env) {
   });
 }
 
-function fiveHourBudgetDecision(state, config) {
+function fiveHourBudgetDecision(state, config, { scope = 'subagent' } = {}) {
   const fiveHour = state.rateLimits.fiveHour;
   const latest = fiveHour.latestUsedPercentage;
   const baseline = fiveHour.baselineUsedPercentage;
+  const enabled =
+    scope === 'session'
+      ? sessionBudgetEnforcementEnabled(config)
+      : subagentEnforcementEnabled(config);
 
-  if (!config.enforcement_enabled) return null;
+  if (!enabled) return null;
   if (latest === null || baseline === null) return null;
 
   if (latest >= config.absolute_five_hour_ceiling_percent) {
@@ -673,7 +707,7 @@ function activeDispatchQueuedAgent(state) {
 
 function canRetryQueuedAgent(state, config) {
   return (
-    config.enforcement_enabled &&
+    subagentEnforcementEnabled(config) &&
     config.max_concurrent_subagents > 0 &&
     occupiedSubagentSlots(state) < config.max_concurrent_subagents &&
     !activeDispatchQueuedAgent(state) &&
@@ -771,10 +805,6 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName, options = {
   };
 }
 
-function isExplicitQueueContinuePrompt(prompt) {
-  return /\b(continue|resume|retry|next|go on|keep going)\b/i.test(String(prompt || ''));
-}
-
 function subagentTokenBudgetStatus(state, config) {
   const limit = config.max_subagent_tokens_per_session;
   if (!limit || limit <= 0) return null;
@@ -795,7 +825,7 @@ function subagentTokenBudgetStatus(state, config) {
 }
 
 function subagentTokenBudgetDecision(state, config, { includeWarning = true } = {}) {
-  if (!config.enforcement_enabled) return null;
+  if (!subagentEnforcementEnabled(config)) return null;
   const status = subagentTokenBudgetStatus(state, config);
   if (!status) return null;
 
@@ -819,7 +849,7 @@ function subagentTokenBudgetDecision(state, config, { includeWarning = true } = 
 }
 
 function agentDenyDecision(state, config) {
-  if (!config.enforcement_enabled) return null;
+  if (!subagentEnforcementEnabled(config)) return null;
 
   const budgetReason = fiveHourBudgetDecision(state, config);
   if (budgetReason) {
@@ -863,7 +893,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
 
     const existingLaunch = matchingLaunchReservation(state, input);
     if (
-      config.enforcement_enabled &&
+      subagentEnforcementEnabled(config) &&
       config.max_concurrent_subagents > 0 &&
       existingLaunch
     ) {
@@ -882,7 +912,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
     const inputFingerprint = agentFingerprint(input);
     const matchesDispatch = dispatchItem?.fingerprint === inputFingerprint;
     if (
-      config.enforcement_enabled &&
+      subagentEnforcementEnabled(config) &&
       dispatchItem &&
       !matchesDispatch
     ) {
@@ -925,7 +955,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
     } else {
       const queuedBeforeLaunch = nextQueuedAgent(state);
       if (
-        config.enforcement_enabled &&
+        subagentEnforcementEnabled(config) &&
         !matchesDispatch &&
         queuedBeforeLaunch &&
         queuedBeforeLaunch.fingerprint !== inputFingerprint
@@ -950,7 +980,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
 
       const launchedQueuedItem = removeMatchingQueuedAgent(state, input);
       state.subagents.allowed += 1;
-      if (config.enforcement_enabled && config.max_concurrent_subagents > 0) {
+      if (subagentEnforcementEnabled(config) && config.max_concurrent_subagents > 0) {
         reserveLaunchSlot(state, input, launchedQueuedItem?.queueId || null);
       }
       pushEvent(state, {
@@ -1109,9 +1139,9 @@ export async function handleSubagentStop(input, env = process.env) {
 }
 
 function taskDenyReason(state, config) {
-  if (!config.enforcement_enabled) return null;
+  if (!sessionBudgetEnforcementEnabled(config)) return null;
 
-  const budgetReason = fiveHourBudgetDecision(state, config);
+  const budgetReason = fiveHourBudgetDecision(state, config, { scope: 'session' });
   if (budgetReason) return budgetReason;
 
   return null;
@@ -1180,15 +1210,10 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const config = loadConfig(env);
   const state = await readState(sessionId, env);
-  const reason = fiveHourBudgetDecision(state, config);
+  const reason = fiveHourBudgetDecision(state, config, { scope: 'session' });
 
   if (!reason) {
-    const shouldRepeatQueueNotice = isExplicitQueueContinuePrompt(input?.prompt);
-    const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit', {
-      force: shouldRepeatQueueNotice,
-      allowInitial: shouldRepeatQueueNotice
-    });
-    return notice || { exitCode: 0, stdout: null, stderr: '' };
+    return { exitCode: 0, stdout: null, stderr: '' };
   }
 
   await updateState(sessionId, env, (nextState) => {
@@ -1274,7 +1299,7 @@ export function formatReport(report) {
   const fiveHour = state.rateLimits.fiveHour;
   const lines = [
     `Subagent Cap report for ${report.sessionId}`,
-    `Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'}`,
+    `Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'} (${config.enforcement_mode})`,
     `Subagents: allowed ${state.subagents.allowed}, denied ${state.subagents.denied}, active ${state.subagents.active}, lifecycle starts ${state.subagents.lifecycleStarted}, lifecycle stops ${state.subagents.lifecycleStopped}`,
     `Verified usage: ${summary.verifiedTokenLabel}, ${state.subagents.totalToolUseCount} subagent tool calls, ${state.subagents.totalDurationMs} ms`,
     `Subagent token budget: ${summary.subagentTokenBudget}`,
