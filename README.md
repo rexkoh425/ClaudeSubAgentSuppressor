@@ -86,11 +86,11 @@ After setup, fully exit and reopen Claude Code, then run `/subagent-cap:doctor`.
 Setup also writes the recommended plugin config into `pluginConfigs.subagent-cap@subagent-tools.options`, replacing the long `--config ...` install command:
 
 ```text
-max_concurrent_subagents=1
+max_concurrent_subagents=2
 max_subagent_tokens_per_session=500000
-subagent_token_warning_threshold_percent=95
-session_five_hour_budget_percent=25
-absolute_five_hour_ceiling_percent=95
+subagent_token_warning_threshold_percent=80
+session_five_hour_budget_percent=10
+absolute_five_hour_ceiling_percent=90
 enforcement_enabled=true
 ```
 
@@ -110,7 +110,7 @@ subagent-cap init `
   --config max_subagent_tokens_per_session=250000 `
   --config subagent_token_warning_threshold_percent=90 `
   --config session_five_hour_budget_percent=15 `
-  --config absolute_five_hour_ceiling_percent=95 `
+  --config absolute_five_hour_ceiling_percent=90 `
   --config enforcement_enabled=true
 ```
 

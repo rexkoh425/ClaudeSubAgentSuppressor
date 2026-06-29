@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 import {
   DEFAULT_CONFIG,
+  SETUP_CONFIG,
   buildReport,
   formatSubagentView,
   getPluginRoot,
@@ -104,6 +105,15 @@ test('loadConfig uses strict deny-by-default limits', () => {
   assert.equal(config.enforcement_enabled, true);
 });
 
+test('recommended setup defaults use two subagents and tighter budget thresholds', () => {
+  assert.equal(SETUP_CONFIG.max_concurrent_subagents, 2);
+  assert.equal(SETUP_CONFIG.max_subagent_tokens_per_session, 500000);
+  assert.equal(SETUP_CONFIG.subagent_token_warning_threshold_percent, 80);
+  assert.equal(SETUP_CONFIG.session_five_hour_budget_percent, 10);
+  assert.equal(SETUP_CONFIG.absolute_five_hour_ceiling_percent, 90);
+  assert.equal(SETUP_CONFIG.enforcement_enabled, true);
+});
+
 test('plugin manifest omits userConfig so install does not ask for config flags', async () => {
   const manifestPath = path.resolve('plugins/subagent-budget-guard/.claude-plugin/plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -124,7 +134,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.9';
+  const expectedVersion = '0.5.10';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1123,6 +1133,42 @@ test('formatSubagentView lists queued subagents without printing full prompts by
   });
 });
 
+test('formatSubagentView explains when no tracked session files exist yet', async () => {
+  await withTempEnv(async (env) => {
+    const report = await buildReport(null, env);
+    const output = formatSubagentView(report);
+
+    assert.match(output, /Tracking status: no saved session files found/i);
+    assert.match(output, /Subagent run data comes from Agent hooks/i);
+    assert.match(output, /If you just ran init or updated the plugin in this Claude Code session, restart Claude Code/i);
+    assert.match(output, /Configured concurrency: 0/i);
+    assert.match(output, /5-hour bridge: not observed yet/i);
+    assert.doesNotMatch(output, /status line bridge wasn't initialized with a fresh session/i);
+    assert.doesNotMatch(output, /This is expected since/i);
+  });
+});
+
+test('formatSubagentView explains empty tracked session without blaming statusLine setup', async () => {
+  await withTempEnv(async (env) => {
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-empty-view',
+        rate_limits: { five_hour: { used_percentage: 12, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const report = await buildReport('session-empty-view', env);
+    const output = formatSubagentView(report);
+
+    assert.match(output, /Tracking status: session file exists, but no Agent hook events were recorded/i);
+    assert.match(output, /5-hour bridge: observed/i);
+    assert.match(output, /Run at least one subagent after the plugin is loaded/i);
+    assert.doesNotMatch(output, /status line bridge wasn't initialized with a fresh session/i);
+    assert.doesNotMatch(output, /fully exit and reopen.*send one message/i);
+  });
+});
+
 test('PostToolUse Agent asks Claude to stop when subagent token usage reaches warning threshold', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
@@ -1439,11 +1485,11 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
         settings.pluginConfigs['subagent-cap@subagent-tools'].options;
 
       assert.deepEqual(options, {
-        max_concurrent_subagents: 1,
+        max_concurrent_subagents: 2,
         max_subagent_tokens_per_session: 500000,
-        subagent_token_warning_threshold_percent: 95,
-        session_five_hour_budget_percent: 25,
-        absolute_five_hour_ceiling_percent: 95,
+        subagent_token_warning_threshold_percent: 80,
+        session_five_hour_budget_percent: 10,
+        absolute_five_hour_ceiling_percent: 90,
         enforcement_enabled: true
       });
       assert.equal(result.pluginConfigApplied, true);
@@ -1602,12 +1648,27 @@ test('subagent-cap init writes short plugin config id', async () => {
     assert.ok(settings.pluginConfigs['subagent-cap@subagent-tools']);
     assert.equal(
       settings.pluginConfigs['subagent-cap@subagent-tools'].options.max_concurrent_subagents,
-      1
+      2
     );
     assert.equal(
       settings.pluginConfigs['subagent-cap@subagent-tools'].options
         .max_subagent_tokens_per_session,
       500000
+    );
+    assert.equal(
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options
+        .subagent_token_warning_threshold_percent,
+      80
+    );
+    assert.equal(
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options
+        .session_five_hour_budget_percent,
+      10
+    );
+    assert.equal(
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options
+        .absolute_five_hour_ceiling_percent,
+      90
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });

@@ -49,11 +49,11 @@ node bin/verify.js --offline
 The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/subagent-cap:init` to choose defaults or custom values:
 
 ```text
-max_concurrent_subagents=1
+max_concurrent_subagents=2
 max_subagent_tokens_per_session=500000
-subagent_token_warning_threshold_percent=95
-session_five_hour_budget_percent=25
-absolute_five_hour_ceiling_percent=95
+subagent_token_warning_threshold_percent=80
+session_five_hour_budget_percent=10
+absolute_five_hour_ceiling_percent=90
 enforcement_enabled=true
 ```
 
@@ -71,10 +71,10 @@ Or pass explicit values:
 subagent-cap init \
   --config max_concurrent_subagents=2 \
   --config max_subagent_tokens_per_session=250000 \
-  --config subagent_token_warning_threshold_percent=90 \
-  --config session_five_hour_budget_percent=15 \
-  --config absolute_five_hour_ceiling_percent=95 \
+  --config subagent_token_warning_threshold_percent=80 \
+  --config session_five_hour_budget_percent=10 \
+  --config absolute_five_hour_ceiling_percent=90 \
   --config enforcement_enabled=true
 ```
 
-`max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `95`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.
+`max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `80`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.

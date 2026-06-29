@@ -9,11 +9,11 @@ Ask the user whether to use recommended defaults or custom values.
 Recommended defaults:
 
 ```text
-max_concurrent_subagents=1
+max_concurrent_subagents=2
 max_subagent_tokens_per_session=500000
-subagent_token_warning_threshold_percent=95
-session_five_hour_budget_percent=25
-absolute_five_hour_ceiling_percent=95
+subagent_token_warning_threshold_percent=80
+session_five_hour_budget_percent=10
+absolute_five_hour_ceiling_percent=90
 enforcement_enabled=true
 ```
 
@@ -35,7 +35,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
   --config enforcement_enabled=<true-or-false>
 ```
 
-Then tell the user to fully exit and reopen Claude Code, then interact once so the statusLine bridge receives fresh session JSON.
+Then tell the user to fully exit and reopen Claude Code so the updated hooks and statusLine bridge load for future messages.
 
 For optional terminal verification, run:
 

@@ -24,15 +24,15 @@ export const PLUGIN_ID = 'subagent-cap@subagent-tools';
 export const DEFAULT_CONFIG = Object.freeze({
   max_concurrent_subagents: 0,
   max_subagent_tokens_per_session: 0,
-  subagent_token_warning_threshold_percent: 95,
-  session_five_hour_budget_percent: 25,
-  absolute_five_hour_ceiling_percent: 95,
+  subagent_token_warning_threshold_percent: 80,
+  session_five_hour_budget_percent: 10,
+  absolute_five_hour_ceiling_percent: 90,
   enforcement_enabled: true
 });
 
 export const SETUP_CONFIG = Object.freeze({
   ...DEFAULT_CONFIG,
-  max_concurrent_subagents: 1,
+  max_concurrent_subagents: 2,
   max_subagent_tokens_per_session: 500000
 });
 
@@ -1235,7 +1235,9 @@ export async function latestSessionId(env = process.env) {
 }
 
 export async function buildReport(sessionId, env = process.env) {
-  const resolvedSessionId = sessionId || (await latestSessionId(env)) || 'unknown-session';
+  const sessions = await listSessionIds(env);
+  const resolvedSessionId = sessionId || sessions[0]?.sessionId || 'unknown-session';
+  const sessionFound = sessions.some((item) => item.sessionId === resolvedSessionId);
   const state = await readState(resolvedSessionId, env);
   const config = loadConfig(env);
   const fiveHour = state.rateLimits.fiveHour;
@@ -1248,6 +1250,8 @@ export async function buildReport(sessionId, env = process.env) {
   return {
     plugin: PLUGIN_NAME,
     sessionId: resolvedSessionId,
+    sessionFound,
+    recentSessions: sessions.slice(0, 5),
     config,
     state,
     summary: {
@@ -1301,16 +1305,39 @@ function formatDuration(ms) {
 export function formatSubagentView(report) {
   const runs = report.state.subagents.runs;
   const queued = report.state.subagents.queue || [];
+  const fiveHour = report.state.rateLimits.fiveHour;
   const lines = [
     `Sub-agent view for ${report.sessionId}`,
     `Spawned subagents: ${runs.length}`,
     `Queued subagents: ${queued.length}`,
     `Verified tokens: ${formatCount(report.state.subagents.verifiedTokens)}`,
-    `Total duration: ${formatDuration(report.state.subagents.totalDurationMs)}`
+    `Total duration: ${formatDuration(report.state.subagents.totalDurationMs)}`,
+    `Configured concurrency: ${report.config.max_concurrent_subagents}`,
+    `5-hour bridge: ${fiveHour.bridgeSeen ? 'observed' : 'not observed yet'}`
   ];
 
   if (runs.length === 0 && queued.length === 0) {
-    lines.push('No subagents recorded for this session.');
+    if (!report.sessionFound) {
+      lines.push('Tracking status: no saved session files found.');
+    } else {
+      lines.push('Tracking status: session file exists, but no Agent hook events were recorded.');
+    }
+    lines.push(
+      'Subagent run data comes from Agent hooks; the statusLine bridge only provides 5-hour budget data.'
+    );
+    lines.push(
+      'Run at least one subagent after the plugin is loaded, or pass --session <session-id> to inspect a specific saved session.'
+    );
+    lines.push(
+      'If you just ran init or updated the plugin in this Claude Code session, restart Claude Code so hooks and statusLine load for new messages.'
+    );
+    if (report.recentSessions?.length) {
+      lines.push(
+        `Recent sessions: ${report.recentSessions.map((item) => item.sessionId).join(', ')}`
+      );
+    } else {
+      lines.push('Recent sessions: none');
+    }
     return lines.join('\n');
   }
 
