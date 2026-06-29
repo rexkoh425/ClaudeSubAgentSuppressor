@@ -10,7 +10,7 @@ Recommended defaults:
 
 ```text
 max_concurrent_subagents=1
-max_subagent_tokens_per_session=100000
+max_subagent_tokens_per_session=500000
 subagent_token_warning_threshold_percent=95
 session_five_hour_budget_percent=25
 absolute_five_hour_ceiling_percent=95

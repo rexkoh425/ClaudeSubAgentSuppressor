@@ -33,7 +33,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 export const SETUP_CONFIG = Object.freeze({
   ...DEFAULT_CONFIG,
   max_concurrent_subagents: 1,
-  max_subagent_tokens_per_session: 100000
+  max_subagent_tokens_per_session: 500000
 });
 
 export const CONFIG_KEYS = Object.freeze(Object.keys(DEFAULT_CONFIG));

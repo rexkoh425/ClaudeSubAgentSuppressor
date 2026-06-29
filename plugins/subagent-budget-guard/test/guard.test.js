@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.4';
+  const expectedVersion = '0.5.5';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1010,7 +1010,7 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
 
       assert.deepEqual(options, {
         max_concurrent_subagents: 1,
-        max_subagent_tokens_per_session: 100000,
+        max_subagent_tokens_per_session: 500000,
         subagent_token_warning_threshold_percent: 95,
         session_five_hour_budget_percent: 25,
         absolute_five_hour_ceiling_percent: 95,
@@ -1053,7 +1053,7 @@ test('offline verifier ignores real Claude settings from caller environment', as
           'subagent-cap@subagent-tools': {
             options: {
               max_concurrent_subagents: 1,
-              max_subagent_tokens_per_session: 100000,
+              max_subagent_tokens_per_session: 500000,
               enforcement_enabled: true
             }
           }
@@ -1167,6 +1167,11 @@ test('subagent-cap init writes short plugin config id', async () => {
     assert.equal(
       settings.pluginConfigs['subagent-cap@subagent-tools'].options.max_concurrent_subagents,
       1
+    );
+    assert.equal(
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options
+        .max_subagent_tokens_per_session,
+      500000
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });

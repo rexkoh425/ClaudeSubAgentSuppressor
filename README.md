@@ -87,7 +87,7 @@ Setup also writes the recommended plugin config into `pluginConfigs.subagent-cap
 
 ```text
 max_concurrent_subagents=1
-max_subagent_tokens_per_session=100000
+max_subagent_tokens_per_session=500000
 subagent_token_warning_threshold_percent=95
 session_five_hour_budget_percent=25
 absolute_five_hour_ceiling_percent=95
@@ -121,7 +121,7 @@ The plugin reads these settings from `~/.claude/settings.json` under `pluginConf
 | Key | Manifest default | Setup value | Meaning |
 | --- | ---: | ---: | --- |
 | `max_concurrent_subagents` | `0` | `1` | Maximum active subagents at the same time. `0` blocks all subagents. |
-| `max_subagent_tokens_per_session` | `0` | `100000` | No verified-token cap when `0`; otherwise caps verified subagent tokens after each completed subagent. |
+| `max_subagent_tokens_per_session` | `0` | `500000` | No verified-token cap when `0`; otherwise caps verified subagent tokens after each completed subagent. |
 | `subagent_token_warning_threshold_percent` | `95` | `95` | At this percentage of `max_subagent_tokens_per_session`, the plugin tells Claude to stop using subagents and blocks future subagent launches. |
 | `session_five_hour_budget_percent` | `25` | `25` | Max percentage points this session may consume after the bridge records a baseline. |
 | `absolute_five_hour_ceiling_percent` | `95` | `95` | Hard ceiling against Claude Code's reported 5-hour usage. |
