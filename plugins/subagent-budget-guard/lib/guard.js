@@ -538,6 +538,13 @@ function formatQueuedAgentContext(item, state, config) {
   ].join('\n');
 }
 
+function formatQueuedAgentPendingReason(item, state, config) {
+  return [
+    'Queued subagent pending. Do not start this Agent yet; retry the queued Agent task first.',
+    formatQueuedAgentContext(item, state, config)
+  ].join('\n\n');
+}
+
 async function buildQueuedAgentNotice(sessionId, env, hookEventName) {
   const config = loadConfig(env);
   let context = null;
@@ -670,6 +677,30 @@ export async function handlePreToolUseAgent(input, env = process.env) {
         subagentType: input?.tool_input?.subagent_type || null
       });
     } else {
+      const queuedBeforeLaunch = nextQueuedAgent(state);
+      if (
+        config.enforcement_enabled &&
+        queuedBeforeLaunch &&
+        queuedBeforeLaunch.fingerprint !== agentFingerprint(input)
+      ) {
+        queuedItem = queueConcurrencyDeniedAgent(
+          state,
+          input,
+          'Queued subagent pending; this Agent must wait for queued work to drain.'
+        );
+        const nextItem = nextQueuedAgent(state) || queuedBeforeLaunch;
+        reason = formatQueuedAgentPendingReason(nextItem, state, config);
+        state.subagents.denied += 1;
+        pushEvent(state, {
+          type: 'agent-denied',
+          reason,
+          queueId: queuedItem.queueId,
+          description: input?.tool_input?.description || null,
+          subagentType: input?.tool_input?.subagent_type || null
+        });
+        return state;
+      }
+
       const launchedQueuedItem = removeMatchingQueuedAgent(state, input);
       state.subagents.allowed += 1;
       pushEvent(state, {
@@ -818,7 +849,8 @@ export async function handleSubagentStop(input, env = process.env) {
     return state;
   });
 
-  return { exitCode: 0, stdout: null, stderr: '' };
+  const notice = await buildQueuedAgentNotice(sessionId, env, 'SubagentStop');
+  return notice || { exitCode: 0, stdout: null, stderr: '' };
 }
 
 function taskDenyReason(state, config) {

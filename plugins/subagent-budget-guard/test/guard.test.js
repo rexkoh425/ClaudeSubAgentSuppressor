@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.3';
+  const expectedVersion = '0.5.4';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -442,7 +442,144 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
     assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /Routine docs scan/);
 
     const report = await buildReport('session-queue-context', env);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 2);
+  });
+});
+
+test('SubagentStop immediately surfaces queued work when capacity opens', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-stop-notice',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-stop-notice');
+    queuedInput.tool_input.description = 'Queued reliability review';
+    queuedInput.tool_input.prompt = 'Run this reliability review once capacity opens.';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    const result = await handleSubagentStop(
+      {
+        session_id: 'session-queue-stop-notice',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued reliability review/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Run this reliability review/);
+
+    const report = await buildReport('session-queue-stop-notice', env);
     assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+  });
+});
+
+test('PreToolUse Agent preserves queued order when capacity is available', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-order',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const firstQueued = agentInput('session-queue-order');
+    firstQueued.tool_input.description = 'Queued database review';
+    firstQueued.tool_input.prompt = 'Run queued database review first.';
+    await handlePreToolUseAgent(firstQueued, env);
+
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-order',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const laterInput = agentInput('session-queue-order');
+    laterInput.tool_use_id = 'toolu_later';
+    laterInput.tool_input.description = 'Later docs review';
+    laterInput.tool_input.prompt = 'Do not run before queued database review.';
+
+    const result = await handlePreToolUseAgent(laterInput, env);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /Queued subagent pending/
+    );
+    assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Queued database review/);
+    assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Run queued database review first/);
+    assert.doesNotMatch(result.stdout.hookSpecificOutput.permissionDecisionReason, /Later docs review/);
+
+    const report = await buildReport('session-queue-order', env);
+    assert.equal(report.state.subagents.allowed, 0);
+    assert.equal(report.state.subagents.queue.length, 2);
+    assert.equal(report.state.subagents.queue[0].description, 'Queued database review');
+    assert.equal(report.state.subagents.queue[1].description, 'Later docs review');
+  });
+});
+
+test('PreToolUse Agent does not enforce queued order when enforcement is disabled', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-disabled',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-disabled');
+    queuedInput.tool_input.description = 'Queued review before disable';
+    queuedInput.tool_input.prompt = 'This queue entry should not enforce after disable.';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-disabled',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    env.CLAUDE_PLUGIN_OPTION_enforcement_enabled = 'false';
+    const laterInput = agentInput('session-queue-disabled');
+    laterInput.tool_use_id = 'toolu_disabled';
+    laterInput.tool_input.description = 'Allowed after disable';
+    laterInput.tool_input.prompt = 'Run because enforcement is disabled.';
+
+    const result = await handlePreToolUseAgent(laterInput, env);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, null);
+
+    const report = await buildReport('session-queue-disabled', env);
+    assert.equal(report.state.subagents.allowed, 1);
+    assert.equal(report.state.subagents.denied, 1);
+    assert.equal(report.state.subagents.queue.length, 1);
   });
 });
 
