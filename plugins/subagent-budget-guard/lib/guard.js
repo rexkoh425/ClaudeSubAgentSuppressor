@@ -764,6 +764,7 @@ export async function handlePostToolUseAgent(input, env = process.env) {
       usage: response.usage || null,
       outputFile: response.outputFile || null
     };
+    const resolvedQueuedItem = removeMatchingQueuedAgent(state, input);
 
     state.subagents.runs.push(run);
     if (state.subagents.runs.length > 100) {
@@ -791,6 +792,7 @@ export async function handlePostToolUseAgent(input, env = process.env) {
       type: 'agent-result',
       status,
       agentId: run.agentId,
+      queueId: resolvedQueuedItem?.queueId || null,
       verified,
       totalTokens: run.totalTokens
     });

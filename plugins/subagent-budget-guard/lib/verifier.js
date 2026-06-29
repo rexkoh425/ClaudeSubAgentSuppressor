@@ -111,7 +111,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.5', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.6', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -229,7 +229,7 @@ export async function runOfflineVerification({
     });
   });
 
-  await withCheck(result, 'statusline-budget-blocks', async () => {
+  await withCheck(result, 'simulated-statusline-budget-blocks', async () => {
     return withIsolatedPluginEnv(env, root, async (baseEnv) => {
       const checkEnv = {
         ...baseEnv,
@@ -258,7 +258,7 @@ export async function runOfflineVerification({
         checkEnv
       );
       assert(output.stdout?.decision === 'block', 'prompt was not blocked');
-      return output.stdout.reason;
+      return `simulated check only: ${output.stdout.reason}`;
     });
   });
 

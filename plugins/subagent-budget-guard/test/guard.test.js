@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.5';
+  const expectedVersion = '0.5.6';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -583,6 +583,46 @@ test('PreToolUse Agent does not enforce queued order when enforcement is disable
   });
 });
 
+test('PostToolUse Agent clears a matching queued item if completion arrives first', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-posttool-clear',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-posttool-clear');
+    queuedInput.tool_input.description = 'Subagent 2 greeting';
+    queuedInput.tool_input.prompt = 'Say exactly: "hello, how are you? I am subagent 2"';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    await handlePostToolUseAgent(
+      {
+        ...queuedInput,
+        hook_event_name: 'PostToolUse',
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-subagent-2',
+          totalTokens: 42,
+          totalDurationMs: 1000,
+          totalToolUseCount: 0
+        }
+      },
+      env
+    );
+
+    const report = await buildReport('session-queue-posttool-clear', env);
+    assert.equal(report.state.subagents.queue.length, 0);
+    assert.equal(report.state.subagents.queueLaunched, 1);
+    assert.equal(report.state.subagents.completed, 1);
+  });
+});
+
 test('PostToolUse Agent records verified subagent tokens and metadata', async () => {
   await withTempEnv(async (env) => {
     await handlePostToolUseAgent(
@@ -1036,7 +1076,13 @@ test('offline verifier validates plugin shape and simulated enforcement', async 
     assert.equal(result.ok, true, result.failures.join('\n'));
     assert.equal(result.failures.length, 0);
     assert.ok(result.checks.some((check) => check.name === 'pretool-agent-denies-default'));
-    assert.ok(result.checks.some((check) => check.name === 'statusline-budget-blocks'));
+    assert.ok(
+      result.checks.some(
+        (check) =>
+          check.name === 'simulated-statusline-budget-blocks' &&
+          check.detail.startsWith('simulated check only:')
+      )
+    );
     assert.ok(result.checks.some((check) => check.name === 'setup-applies-plugin-config'));
   });
 });
