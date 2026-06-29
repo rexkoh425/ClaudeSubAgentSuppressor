@@ -43,6 +43,7 @@ export const REMOVED_CONFIG_KEYS = Object.freeze([
 ]);
 
 const LAUNCH_RESERVATION_TTL_MS = 120000;
+const QUEUE_DISPATCH_LEASE_TTL_MS = 300000;
 
 const NUMBER_KEYS = new Set(
   CONFIG_KEYS.filter((key) => typeof DEFAULT_CONFIG[key] === 'number')
@@ -271,6 +272,7 @@ function normalizeState(state, sessionId) {
     ? state.subagents.launchReservations
     : [];
   state.subagents.launching = state.subagents.launchReservations.length;
+  syncQueueItems(state);
   state.agentTeam = { ...fresh.agentTeam, ...(state.agentTeam || {}) };
   state.rateLimits = {
     ...fresh.rateLimits,
@@ -447,6 +449,16 @@ function sortQueuedAgents(state) {
   state.subagents.queue.sort(compareQueuedAgents);
 }
 
+function syncQueueItems(state) {
+  state.subagents.queue = Array.isArray(state.subagents.queue) ? state.subagents.queue : [];
+  for (const item of state.subagents.queue) {
+    item.status = item.status || 'queued';
+    item.dispatchLeaseId = item.dispatchLeaseId || null;
+    item.dispatchLeaseAt = item.dispatchLeaseAt || null;
+    item.dispatchHookEventName = item.dispatchHookEventName || null;
+  }
+}
+
 function syncLaunchReservationCount(state) {
   state.subagents.launchReservations = Array.isArray(state.subagents.launchReservations)
     ? state.subagents.launchReservations
@@ -546,6 +558,7 @@ function releaseLaunchReservation(state, input = {}, { fallbackToOldest = true }
 }
 
 function queueConcurrencyDeniedAgent(state, input, reason) {
+  syncQueueItems(state);
   const fingerprint = agentFingerprint(input);
   const existingIndex = findQueuedAgentIndex(state, fingerprint);
   const identity = agentIdentity(input);
@@ -556,6 +569,9 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
     const existing = state.subagents.queue[existingIndex];
     existing.attempts += 1;
     existing.lastQueuedAt = nowIso();
+    if (existing.status !== 'dispatching') {
+      existing.status = 'queued';
+    }
     existing.priority = Math.max(existing.priority || 0, agentQueuePriority(input));
     existing.reason = reason;
     sortQueuedAgents(state);
@@ -580,6 +596,9 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
     lastNotifiedAt: null,
     notifyCount: 0,
     lastNotifiedWindow: null,
+    dispatchLeaseId: null,
+    dispatchLeaseAt: null,
+    dispatchHookEventName: null,
     reason,
     description: identity.description || null,
     subagentType: identity.subagentType || null,
@@ -600,6 +619,7 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
 }
 
 function removeMatchingQueuedAgent(state, input) {
+  syncQueueItems(state);
   const index = findQueuedAgentIndex(state, agentFingerprint(input));
   if (index === -1) return null;
 
@@ -615,9 +635,40 @@ function removeMatchingQueuedAgent(state, input) {
 }
 
 function nextQueuedAgent(state) {
+  pruneExpiredQueueDispatches(state);
   const queued = [...state.subagents.queue].filter((item) => item.status === 'queued');
   queued.sort(compareQueuedAgents);
   return queued[0] || null;
+}
+
+function pruneExpiredQueueDispatches(state) {
+  syncQueueItems(state);
+  const now = Date.now();
+  for (const item of state.subagents.queue) {
+    if (item.status !== 'dispatching') continue;
+
+    const leaseAtMs = Date.parse(item.dispatchLeaseAt || '');
+    if (Number.isFinite(leaseAtMs) && now - leaseAtMs < QUEUE_DISPATCH_LEASE_TTL_MS) {
+      continue;
+    }
+
+    item.status = 'queued';
+    item.dispatchLeaseId = null;
+    item.dispatchLeaseAt = null;
+    item.dispatchHookEventName = null;
+    pushEvent(state, {
+      type: 'agent-queue-dispatch-lease-expired',
+      queueId: item.queueId
+    });
+  }
+  sortQueuedAgents(state);
+}
+
+function activeDispatchQueuedAgent(state) {
+  pruneExpiredQueueDispatches(state);
+  const dispatching = state.subagents.queue.filter((item) => item.status === 'dispatching');
+  dispatching.sort(compareQueuedAgents);
+  return dispatching[0] || null;
 }
 
 function canRetryQueuedAgent(state, config) {
@@ -625,22 +676,26 @@ function canRetryQueuedAgent(state, config) {
     config.enforcement_enabled &&
     config.max_concurrent_subagents > 0 &&
     occupiedSubagentSlots(state) < config.max_concurrent_subagents &&
-    state.subagents.queue.length > 0
+    !activeDispatchQueuedAgent(state) &&
+    state.subagents.queue.some((item) => item.status === 'queued')
   );
 }
 
 function formatQueuedAgentContext(item, state, config) {
   const available = Math.max(0, config.max_concurrent_subagents - occupiedSubagentSlots(state));
   return [
+    'SUBAGENT_QUEUE_DISPATCH',
     'Queued subagent ready to launch.',
-    'Action required: call the Agent tool once with this queued task. Do not answer the queued prompt directly in chat. Do not launch duplicate copies.',
     `Queue id: ${item.queueId}`,
+    `Dispatch lease: ${item.dispatchLeaseId || 'none'}`,
     `Priority: ${Number(item.priority || 0)}`,
     `Attempts: ${Number(item.attempts || 0)}`,
     `Concurrency available: ${available}/${config.max_concurrent_subagents}`,
     `Subagent type: ${item.subagentType || 'unknown'}`,
     `Description: ${item.description || 'no description'}`,
-    'After this Agent call is accepted, wait for its normal completion or the next queue notice before launching another queued task.',
+    'Action: Call the Agent tool exactly once now; no prose before the tool call.',
+    'Do not answer the queued prompt directly in chat.',
+    'Do not launch any other queued item until another SUBAGENT_QUEUE_DISPATCH block appears.',
     'Queued Agent prompt to pass to the Agent tool:',
     item.prompt || '(empty prompt)'
   ].join('\n');
@@ -659,6 +714,26 @@ function queuedNoticeWindow(state) {
   return Number(state.subagents.lifecycleStopped || 0);
 }
 
+function leaseQueuedAgentForDispatch(state, item, hookEventName) {
+  const leaseId = `dispatch-${item.fingerprint.slice(0, 12)}-${Date.now().toString(36)}`;
+  item.status = 'dispatching';
+  item.dispatchLeaseId = leaseId;
+  item.dispatchLeaseAt = nowIso();
+  item.dispatchHookEventName = hookEventName;
+  item.notifyCount = Number(item.notifyCount || 0) + 1;
+  item.lastNotifiedAt = nowIso();
+  item.lastNotifiedWindow = queuedNoticeWindow(state);
+  state.subagents.queueNotices += 1;
+  pushEvent(state, {
+    type: 'agent-queue-dispatch-lease',
+    queueId: item.queueId,
+    leaseId,
+    hookEventName,
+    notifyCount: item.notifyCount
+  });
+  return item;
+}
+
 function canNotifyQueuedAgent(item, state, { force = false, allowInitial = true } = {}) {
   if (force) return true;
   if (!allowInitial) return false;
@@ -671,23 +746,15 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName, options = {
 
   await updateState(sessionId, env, (state) => {
     pruneStaleLaunchReservations(state);
+    pruneExpiredQueueDispatches(state);
     if (!canRetryQueuedAgent(state, config)) return state;
 
     const item = nextQueuedAgent(state);
     if (!item) return state;
     if (!canNotifyQueuedAgent(item, state, options)) return state;
 
-    item.notifyCount = Number(item.notifyCount || 0) + 1;
-    item.lastNotifiedAt = nowIso();
-    item.lastNotifiedWindow = queuedNoticeWindow(state);
-    state.subagents.queueNotices += 1;
+    leaseQueuedAgentForDispatch(state, item, hookEventName);
     context = formatQueuedAgentContext(item, state, config);
-    pushEvent(state, {
-      type: 'agent-queue-notice',
-      queueId: item.queueId,
-      hookEventName,
-      notifyCount: item.notifyCount
-    });
     return state;
   });
 
@@ -791,6 +858,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
 
   await updateState(sessionId, env, (state) => {
     pruneStaleLaunchReservations(state);
+    pruneExpiredQueueDispatches(state);
     state.subagents.requested += 1;
 
     const existingLaunch = matchingLaunchReservation(state, input);
@@ -804,6 +872,36 @@ export async function handlePreToolUseAgent(input, env = process.env) {
       pushEvent(state, {
         type: 'agent-duplicate-launch-denied',
         reason,
+        description: input?.tool_input?.description || null,
+        subagentType: input?.tool_input?.subagent_type || null
+      });
+      return state;
+    }
+
+    const dispatchItem = activeDispatchQueuedAgent(state);
+    const inputFingerprint = agentFingerprint(input);
+    const matchesDispatch = dispatchItem?.fingerprint === inputFingerprint;
+    if (
+      config.enforcement_enabled &&
+      dispatchItem &&
+      !matchesDispatch
+    ) {
+      queuedItem = queueConcurrencyDeniedAgent(
+        state,
+        input,
+        'Queued dispatch in progress; this Agent must wait.'
+      );
+      reason = [
+        `Queued dispatch in progress: ${queuedAgentSummary(dispatchItem)} (${dispatchItem.queueId}).`,
+        'Do not launch this Agent call now.',
+        `This attempted Agent was saved to queue as ${queuedItem.queueId}.`
+      ].join(' ');
+      state.subagents.denied += 1;
+      pushEvent(state, {
+        type: 'agent-denied',
+        reason,
+        queueId: queuedItem.queueId,
+        dispatchQueueId: dispatchItem.queueId,
         description: input?.tool_input?.description || null,
         subagentType: input?.tool_input?.subagent_type || null
       });
@@ -828,8 +926,9 @@ export async function handlePreToolUseAgent(input, env = process.env) {
       const queuedBeforeLaunch = nextQueuedAgent(state);
       if (
         config.enforcement_enabled &&
+        !matchesDispatch &&
         queuedBeforeLaunch &&
-        queuedBeforeLaunch.fingerprint !== agentFingerprint(input)
+        queuedBeforeLaunch.fingerprint !== inputFingerprint
       ) {
         queuedItem = queueConcurrencyDeniedAgent(
           state,

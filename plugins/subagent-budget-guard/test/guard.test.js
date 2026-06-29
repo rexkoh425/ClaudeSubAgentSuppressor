@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.8';
+  const expectedVersion = '0.5.9';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -501,9 +501,13 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
     );
     const state = JSON.parse(await readFile(statePath, 'utf8'));
     for (const item of state.subagents.queue) {
+      item.status = 'queued';
       item.notifyCount = 0;
       item.lastNotifiedAt = null;
       item.lastNotifiedWindow = null;
+      item.dispatchLeaseId = null;
+      item.dispatchLeaseAt = null;
+      item.dispatchHookEventName = null;
     }
     state.subagents.queueNotices = 0;
     await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
@@ -615,7 +619,200 @@ test('PostToolBatch does not repeat a queued prompt after SubagentStop already s
   });
 });
 
-test('UserPromptSubmit repeats queued work only for explicit continue prompts', async () => {
+test('Queue notice leases exactly one queued agent until that agent launches', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-dispatch-lease',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const firstQueued = agentInput('session-queue-dispatch-lease');
+    firstQueued.tool_input.description = 'Subagent 3 greeting';
+    firstQueued.tool_input.prompt = 'Say exactly: "hello, i am subagent 3"';
+    await handlePreToolUseAgent(firstQueued, env);
+
+    const secondQueued = agentInput('session-queue-dispatch-lease');
+    secondQueued.tool_use_id = 'toolu_second_queued';
+    secondQueued.tool_input.description = 'Subagent 4 greeting';
+    secondQueued.tool_input.prompt = 'Say exactly: "hello, i am subagent 4"';
+    await handlePreToolUseAgent(secondQueued, env);
+
+    const firstNotice = await handleSubagentStop(
+      {
+        session_id: 'session-queue-dispatch-lease',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    const repeatedPromptNotice = await handleUserPromptSubmit(
+      {
+        session_id: 'session-queue-dispatch-lease',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'continue'
+      },
+      env
+    );
+    const repeatedBatchNotice = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-dispatch-lease',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+    const wrongQueuedLaunch = await handlePreToolUseAgent(secondQueued, env);
+
+    assert.match(
+      firstNotice.stdout.hookSpecificOutput.additionalContext,
+      /^SUBAGENT_QUEUE_DISPATCH/m
+    );
+    assert.doesNotMatch(
+      firstNotice.stdout.hookSpecificOutput.additionalContext,
+      /\b(retry|automatically|background|I will|I'll|share the result)\b/i
+    );
+    assert.equal(repeatedPromptNotice.stdout, null);
+    assert.equal(repeatedBatchNotice.stdout, null);
+    assert.equal(wrongQueuedLaunch.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      wrongQueuedLaunch.stdout.hookSpecificOutput.permissionDecisionReason,
+      /queued dispatch in progress/i
+    );
+    assert.doesNotMatch(
+      wrongQueuedLaunch.stdout.hookSpecificOutput.permissionDecisionReason,
+      /hello, i am subagent 3|hello, i am subagent 4|retry|automatically/i
+    );
+
+    let report = await buildReport('session-queue-dispatch-lease', env);
+    assert.equal(report.state.subagents.queue.length, 2);
+    assert.equal(report.state.subagents.queue[0].description, 'Subagent 3 greeting');
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
+    assert.ok(report.state.subagents.queue[0].dispatchLeaseId);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+    assert.equal(report.state.subagents.queue[1].status, 'queued');
+
+    const correctQueuedLaunch = await handlePreToolUseAgent(firstQueued, env);
+    report = await buildReport('session-queue-dispatch-lease', env);
+
+    assert.equal(correctQueuedLaunch.stdout, null);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].description, 'Subagent 4 greeting');
+    assert.equal(report.state.subagents.queue[0].status, 'queued');
+    assert.equal(report.state.subagents.queueLaunched, 1);
+    assert.equal(report.state.subagents.launching, 1);
+  });
+});
+
+test('Five queued subagents dispatch one at a time without repeated queue prompts', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    const sessionId = 'session-five-subagent-queue';
+    const inputs = Array.from({ length: 5 }, (_, index) => {
+      const number = index + 1;
+      const input = agentInput(sessionId);
+      input.tool_use_id = `toolu_subagent_${number}`;
+      input.tool_input.description = `Subagent ${number}`;
+      input.tool_input.prompt = `Say exactly: "hello, i am subagent ${number}"`;
+      return input;
+    });
+
+    const firstLaunch = await handlePreToolUseAgent(inputs[0], env);
+    await handleSubagentStart(
+      {
+        session_id: sessionId,
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-1',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    for (const input of inputs.slice(1)) {
+      const queued = await handlePreToolUseAgent(input, env);
+      assert.equal(queued.stdout.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(queued.stdout.hookSpecificOutput.permissionDecisionReason, /saved to queue/i);
+      assert.doesNotMatch(
+        queued.stdout.hookSpecificOutput.permissionDecisionReason,
+        /retry|automatically|hello, i am subagent/i
+      );
+    }
+
+    assert.equal(firstLaunch.stdout, null);
+
+    for (let nextIndex = 1; nextIndex < inputs.length; nextIndex += 1) {
+      const nextNumber = nextIndex + 1;
+      const notice = await handleSubagentStop(
+        {
+          session_id: sessionId,
+          hook_event_name: 'SubagentStop',
+          agent_id: `agent-${nextIndex}`,
+          agent_type: 'Explore'
+        },
+        env
+      );
+      const context = notice.stdout.hookSpecificOutput.additionalContext;
+
+      assert.match(context, /^SUBAGENT_QUEUE_DISPATCH/m);
+      assert.match(context, new RegExp(`Subagent ${nextNumber}`));
+      assert.match(context, new RegExp(`hello, i am subagent ${nextNumber}`));
+      assert.doesNotMatch(context, /\b(retry|automatically|background|I will|I'll)\b/i);
+
+      const repeatedByPrompt = await handleUserPromptSubmit(
+        {
+          session_id: sessionId,
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'continue'
+        },
+        env
+      );
+      const repeatedByBatch = await handlePostToolBatch(
+        {
+          session_id: sessionId,
+          hook_event_name: 'PostToolBatch'
+        },
+        env
+      );
+      assert.equal(repeatedByPrompt.stdout, null);
+      assert.equal(repeatedByBatch.stdout, null);
+
+      if (nextIndex + 1 < inputs.length) {
+        const wrongLaunch = await handlePreToolUseAgent(inputs[nextIndex + 1], env);
+        assert.equal(wrongLaunch.stdout.hookSpecificOutput.permissionDecision, 'deny');
+        assert.match(
+          wrongLaunch.stdout.hookSpecificOutput.permissionDecisionReason,
+          /queued dispatch in progress/i
+        );
+      }
+
+      const accepted = await handlePreToolUseAgent(inputs[nextIndex], env);
+      assert.equal(accepted.stdout, null);
+      await handleSubagentStart(
+        {
+          session_id: sessionId,
+          hook_event_name: 'SubagentStart',
+          agent_id: `agent-${nextNumber}`,
+          agent_type: 'Explore'
+        },
+        env
+      );
+    }
+
+    const report = await buildReport(sessionId, env);
+    assert.equal(report.state.subagents.allowed, 5);
+    assert.equal(report.state.subagents.queue.length, 0);
+    assert.equal(report.state.subagents.queueLaunched, 4);
+    assert.equal(report.state.subagents.queueNotices, 4);
+    assert.equal(report.state.subagents.active, 1);
+    assert.equal(report.state.subagents.launching, 0);
+  });
+});
+
+test('UserPromptSubmit does not repeat leased queued work on normal or continue prompts', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
     await handleSubagentStart(
@@ -661,10 +858,12 @@ test('UserPromptSubmit repeats queued work only for explicit continue prompts', 
 
     assert.equal(unrelatedPrompt.exitCode, 0);
     assert.equal(unrelatedPrompt.stdout, null);
-    assert.match(continuePrompt.stdout.hookSpecificOutput.additionalContext, /Subagent 3 greeting/);
+    assert.equal(continuePrompt.exitCode, 0);
+    assert.equal(continuePrompt.stdout, null);
 
     const report = await buildReport('session-queue-user-repeat', env);
-    assert.equal(report.state.subagents.queue[0].notifyCount, 2);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
   });
 });
 
@@ -707,7 +906,7 @@ test('PreToolUse Agent preserves queued order when capacity is available', async
     assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(
       result.stdout.hookSpecificOutput.permissionDecisionReason,
-      /Queued subagent pending/
+      /Queued dispatch in progress/
     );
     assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Queued database review/);
     assert.doesNotMatch(
