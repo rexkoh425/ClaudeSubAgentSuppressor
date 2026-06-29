@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.7';
+  const expectedVersion = '0.5.8';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -343,7 +343,12 @@ test('PreToolUse Agent queues concurrency-denied subagents with full prompt and 
     const second = await handlePreToolUseAgent(queuedInput, env);
 
     assert.equal(first.stdout.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(first.stdout.hookSpecificOutput.permissionDecisionReason, /queued/i);
+    assert.match(first.stdout.hookSpecificOutput.permissionDecisionReason, /saved to queue/i);
+    assert.match(first.stdout.hookSpecificOutput.permissionDecisionReason, /queue notice/i);
+    assert.doesNotMatch(
+      first.stdout.hookSpecificOutput.permissionDecisionReason,
+      /retry|automatically/i
+    );
     assert.equal(second.stdout.hookSpecificOutput.permissionDecision, 'deny');
 
     const report = await buildReport('session-queue', env);
@@ -354,6 +359,68 @@ test('PreToolUse Agent queues concurrency-denied subagents with full prompt and 
     assert.equal(report.state.subagents.queue[0].prompt, queuedInput.tool_input.prompt);
     assert.equal(report.state.subagents.queue[0].description, 'Urgent auth follow-up');
     assert.equal(report.state.subagents.queue[0].priority, 100);
+  });
+});
+
+test('PreToolUse Agent reserves capacity until SubagentStart records lifecycle', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+
+    const firstInput = agentInput('session-launch-reservation');
+    firstInput.tool_input.description = 'Subagent 1 greeting';
+    firstInput.tool_input.prompt = 'Say exactly: "hello, i am subagent 1"';
+
+    const accepted = await handlePreToolUseAgent(firstInput, env);
+    const duplicate = await handlePreToolUseAgent(firstInput, env);
+
+    const secondInput = agentInput('session-launch-reservation');
+    secondInput.tool_use_id = 'toolu_second';
+    secondInput.tool_input.description = 'Subagent 2 greeting';
+    secondInput.tool_input.prompt = 'Say exactly: "hello, i am subagent 2"';
+    const queued = await handlePreToolUseAgent(secondInput, env);
+
+    assert.equal(accepted.exitCode, 0);
+    assert.equal(accepted.stdout, null);
+    assert.equal(duplicate.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      duplicate.stdout.hookSpecificOutput.permissionDecisionReason,
+      /already accepted/i
+    );
+    assert.doesNotMatch(
+      duplicate.stdout.hookSpecificOutput.permissionDecisionReason,
+      /retry|automatically|queue id/i
+    );
+    assert.equal(queued.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(queued.stdout.hookSpecificOutput.permissionDecisionReason, /saved to queue/i);
+    assert.match(queued.stdout.hookSpecificOutput.permissionDecisionReason, /queue notice/i);
+    assert.doesNotMatch(
+      queued.stdout.hookSpecificOutput.permissionDecisionReason,
+      /retry|automatically/i
+    );
+
+    let report = await buildReport('session-launch-reservation', env);
+    assert.equal(report.state.subagents.allowed, 1);
+    assert.equal(report.state.subagents.denied, 2);
+    assert.equal(report.state.subagents.active, 0);
+    assert.equal(report.state.subagents.launching, 1);
+    assert.equal(report.state.subagents.launchReservations.length, 1);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].description, 'Subagent 2 greeting');
+
+    await handleSubagentStart(
+      {
+        session_id: 'session-launch-reservation',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-subagent-1',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    report = await buildReport('session-launch-reservation', env);
+    assert.equal(report.state.subagents.launching, 0);
+    assert.equal(report.state.subagents.launchReservations.length, 0);
+    assert.equal(report.state.subagents.active, 1);
   });
 });
 
@@ -450,11 +517,12 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
     );
 
     assert.equal(result.exitCode, 0);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to launch/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Urgent production failure/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Use this full urgent prompt/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
+    assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /retry|automatically/i);
     assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /Routine docs scan/);
 
     const report = await buildReport('session-queue-context', env);
@@ -491,11 +559,12 @@ test('SubagentStop immediately surfaces queued work when capacity opens', async 
     );
 
     assert.equal(result.exitCode, 0);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to launch/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued reliability review/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Run this reliability review/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
+    assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /retry|automatically/i);
 
     const report = await buildReport('session-queue-stop-notice', env);
     assert.equal(report.state.subagents.queue[0].notifyCount, 1);
@@ -641,7 +710,14 @@ test('PreToolUse Agent preserves queued order when capacity is available', async
       /Queued subagent pending/
     );
     assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Queued database review/);
-    assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Run queued database review first/);
+    assert.doesNotMatch(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /Run queued database review first/
+    );
+    assert.doesNotMatch(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /retry|automatically/i
+    );
     assert.doesNotMatch(result.stdout.hookSpecificOutput.permissionDecisionReason, /Later docs review/);
 
     const report = await buildReport('session-queue-order', env);

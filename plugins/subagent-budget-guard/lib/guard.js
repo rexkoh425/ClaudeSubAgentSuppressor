@@ -42,6 +42,8 @@ export const REMOVED_CONFIG_KEYS = Object.freeze([
   'max_agent_team_tasks_per_session'
 ]);
 
+const LAUNCH_RESERVATION_TTL_MS = 120000;
+
 const NUMBER_KEYS = new Set(
   CONFIG_KEYS.filter((key) => typeof DEFAULT_CONFIG[key] === 'number')
 );
@@ -179,6 +181,8 @@ function initialState(sessionId) {
       active: 0,
       completed: 0,
       backgroundLaunched: 0,
+      launching: 0,
+      launchReservations: [],
       lifecycleStarted: 0,
       lifecycleStopped: 0,
       verifiedTokens: 0,
@@ -263,6 +267,10 @@ async function readState(sessionId, env) {
 function normalizeState(state, sessionId) {
   const fresh = initialState(sessionId);
   state.subagents = { ...fresh.subagents, ...(state.subagents || {}) };
+  state.subagents.launchReservations = Array.isArray(state.subagents.launchReservations)
+    ? state.subagents.launchReservations
+    : [];
+  state.subagents.launching = state.subagents.launchReservations.length;
   state.agentTeam = { ...fresh.agentTeam, ...(state.agentTeam || {}) };
   state.rateLimits = {
     ...fresh.rateLimits,
@@ -439,6 +447,104 @@ function sortQueuedAgents(state) {
   state.subagents.queue.sort(compareQueuedAgents);
 }
 
+function syncLaunchReservationCount(state) {
+  state.subagents.launchReservations = Array.isArray(state.subagents.launchReservations)
+    ? state.subagents.launchReservations
+    : [];
+  state.subagents.launching = state.subagents.launchReservations.length;
+}
+
+function pruneStaleLaunchReservations(state) {
+  syncLaunchReservationCount(state);
+  const now = Date.now();
+  const before = state.subagents.launchReservations.length;
+  state.subagents.launchReservations = state.subagents.launchReservations.filter((item) => {
+    const reservedAtMs = Date.parse(item.reservedAt || '');
+    if (!Number.isFinite(reservedAtMs)) return false;
+    return now - reservedAtMs < LAUNCH_RESERVATION_TTL_MS;
+  });
+  syncLaunchReservationCount(state);
+
+  if (state.subagents.launchReservations.length !== before) {
+    pushEvent(state, {
+      type: 'agent-launch-reservation-expired',
+      expired: before - state.subagents.launchReservations.length
+    });
+  }
+}
+
+function occupiedSubagentSlots(state) {
+  syncLaunchReservationCount(state);
+  return Number(state.subagents.active || 0) + Number(state.subagents.launching || 0);
+}
+
+function findLaunchReservationIndex(state, input) {
+  const fingerprint = agentFingerprint(input);
+  return state.subagents.launchReservations.findIndex((item) => item.fingerprint === fingerprint);
+}
+
+function matchingLaunchReservation(state, input) {
+  const index = findLaunchReservationIndex(state, input);
+  return index === -1 ? null : state.subagents.launchReservations[index];
+}
+
+function reserveLaunchSlot(state, input, queueId = null) {
+  pruneStaleLaunchReservations(state);
+  if (matchingLaunchReservation(state, input)) return null;
+
+  const identity = agentIdentity(input);
+  const reservation = {
+    fingerprint: agentFingerprint(input),
+    reservedAt: nowIso(),
+    queueId,
+    toolUseId: input?.tool_use_id || null,
+    description: identity.description || null,
+    subagentType: identity.subagentType || null
+  };
+
+  state.subagents.launchReservations.push(reservation);
+  syncLaunchReservationCount(state);
+  pushEvent(state, {
+    type: 'agent-launch-reserved',
+    queueId,
+    description: reservation.description,
+    subagentType: reservation.subagentType
+  });
+  return reservation;
+}
+
+function releaseLaunchReservation(state, input = {}, { fallbackToOldest = true } = {}) {
+  pruneStaleLaunchReservations(state);
+  let index = -1;
+
+  if (input?.tool_input) {
+    index = findLaunchReservationIndex(state, input);
+  }
+
+  if (index === -1 && input?.agent_type) {
+    const agentType = normalizeText(input.agent_type);
+    index = state.subagents.launchReservations.findIndex(
+      (item) => normalizeText(item.subagentType) === agentType
+    );
+  }
+
+  if (index === -1 && fallbackToOldest && state.subagents.launchReservations.length > 0) {
+    index = 0;
+  }
+
+  if (index === -1) return null;
+
+  const [reservation] = state.subagents.launchReservations.splice(index, 1);
+  syncLaunchReservationCount(state);
+  pushEvent(state, {
+    type: 'agent-launch-reservation-cleared',
+    queueId: reservation.queueId || null,
+    description: reservation.description,
+    subagentType: reservation.subagentType
+  });
+  return reservation;
+}
+
 function queueConcurrencyDeniedAgent(state, input, reason) {
   const fingerprint = agentFingerprint(input);
   const existingIndex = findQueuedAgentIndex(state, fingerprint);
@@ -518,23 +624,23 @@ function canRetryQueuedAgent(state, config) {
   return (
     config.enforcement_enabled &&
     config.max_concurrent_subagents > 0 &&
-    state.subagents.active < config.max_concurrent_subagents &&
+    occupiedSubagentSlots(state) < config.max_concurrent_subagents &&
     state.subagents.queue.length > 0
   );
 }
 
 function formatQueuedAgentContext(item, state, config) {
-  const available = Math.max(0, config.max_concurrent_subagents - state.subagents.active);
+  const available = Math.max(0, config.max_concurrent_subagents - occupiedSubagentSlots(state));
   return [
-    'Queued subagent ready to retry.',
-    'Action required: call the Agent tool with this queued task. Do not answer the queued prompt directly in chat.',
+    'Queued subagent ready to launch.',
+    'Action required: call the Agent tool once with this queued task. Do not answer the queued prompt directly in chat. Do not launch duplicate copies.',
     `Queue id: ${item.queueId}`,
     `Priority: ${Number(item.priority || 0)}`,
     `Attempts: ${Number(item.attempts || 0)}`,
     `Concurrency available: ${available}/${config.max_concurrent_subagents}`,
     `Subagent type: ${item.subagentType || 'unknown'}`,
     `Description: ${item.description || 'no description'}`,
-    'Retry this queued Agent task before starting new lower-priority subagent work.',
+    'After this Agent call is accepted, wait for its normal completion or the next queue notice before launching another queued task.',
     'Queued Agent prompt to pass to the Agent tool:',
     item.prompt || '(empty prompt)'
   ].join('\n');
@@ -542,8 +648,10 @@ function formatQueuedAgentContext(item, state, config) {
 
 function formatQueuedAgentPendingReason(item, state, config) {
   return [
-    'Queued subagent pending. Do not start this Agent yet; retry the queued Agent task first.',
-    formatQueuedAgentContext(item, state, config)
+    'Queued subagent pending. Do not start this Agent yet.',
+    `Next queued task: ${queuedAgentSummary(item)} (${item.queueId}).`,
+    `Concurrency available: ${Math.max(0, config.max_concurrent_subagents - occupiedSubagentSlots(state))}/${config.max_concurrent_subagents}`,
+    'Do not launch this attempted Agent call again now; wait for a queue notice for the queued task.'
   ].join('\n\n');
 }
 
@@ -562,6 +670,7 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName, options = {
   let context = null;
 
   await updateState(sessionId, env, (state) => {
+    pruneStaleLaunchReservations(state);
     if (!canRetryQueuedAgent(state, config)) return state;
 
     const item = nextQueuedAgent(state);
@@ -662,9 +771,11 @@ function agentDenyDecision(state, config) {
     };
   }
 
-  if (state.subagents.active >= config.max_concurrent_subagents) {
+  if (occupiedSubagentSlots(state) >= config.max_concurrent_subagents) {
+    const active = Number(state.subagents.active || 0);
+    const launching = Number(state.subagents.launching || 0);
     return {
-      reason: `Subagent launch queued: max_concurrent_subagents ${config.max_concurrent_subagents} already reached. Retry this queued agent when active subagents drop below the cap.`,
+      reason: `Subagent launch saved to queue: max_concurrent_subagents ${config.max_concurrent_subagents} is occupied (${active} active, ${launching} starting). Do not launch this Agent call again now; wait for a queue notice after capacity opens.`,
       queueable: true
     };
   }
@@ -679,7 +790,26 @@ export async function handlePreToolUseAgent(input, env = process.env) {
   let queuedItem = null;
 
   await updateState(sessionId, env, (state) => {
+    pruneStaleLaunchReservations(state);
     state.subagents.requested += 1;
+
+    const existingLaunch = matchingLaunchReservation(state, input);
+    if (
+      config.enforcement_enabled &&
+      config.max_concurrent_subagents > 0 &&
+      existingLaunch
+    ) {
+      reason = `Subagent launch already accepted and is starting: ${queuedAgentSummary(existingLaunch)}. Do not launch this Agent call again now.`;
+      state.subagents.denied += 1;
+      pushEvent(state, {
+        type: 'agent-duplicate-launch-denied',
+        reason,
+        description: input?.tool_input?.description || null,
+        subagentType: input?.tool_input?.subagent_type || null
+      });
+      return state;
+    }
+
     const decision = agentDenyDecision(state, config);
     reason = decision?.reason || null;
     if (decision) {
@@ -721,6 +851,9 @@ export async function handlePreToolUseAgent(input, env = process.env) {
 
       const launchedQueuedItem = removeMatchingQueuedAgent(state, input);
       state.subagents.allowed += 1;
+      if (config.enforcement_enabled && config.max_concurrent_subagents > 0) {
+        reserveLaunchSlot(state, input, launchedQueuedItem?.queueId || null);
+      }
       pushEvent(state, {
         type: 'agent-allowed',
         queueId: launchedQueuedItem?.queueId || null,
@@ -768,6 +901,7 @@ export async function handlePostToolUseAgent(input, env = process.env) {
   let tokenBudgetNotice = null;
 
   await updateState(sessionId, env, (state) => {
+    releaseLaunchReservation(state, input, { fallbackToOldest: false });
     const run = {
       at: nowIso(),
       agentId: response.agentId || null,
@@ -843,6 +977,7 @@ export async function handlePostToolBatch(input, env = process.env) {
 export async function handleSubagentStart(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   await updateState(sessionId, env, (state) => {
+    releaseLaunchReservation(state, input);
     state.subagents.lifecycleStarted += 1;
     state.subagents.active += 1;
     pushEvent(state, {
@@ -859,6 +994,7 @@ export async function handleSubagentStart(input, env = process.env) {
 export async function handleSubagentStop(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   await updateState(sessionId, env, (state) => {
+    pruneStaleLaunchReservations(state);
     state.subagents.lifecycleStopped += 1;
     state.subagents.active = Math.max(0, state.subagents.active - 1);
     pushEvent(state, {
