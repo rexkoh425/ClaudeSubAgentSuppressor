@@ -124,7 +124,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for sub-agent-view slash command', async () => {
-  const expectedVersion = '0.5.6';
+  const expectedVersion = '0.5.7';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -427,6 +427,20 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
       env
     );
 
+    const statePath = path.join(
+      env.CLAUDE_PLUGIN_DATA,
+      'sessions',
+      'session-queue-context.json'
+    );
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    for (const item of state.subagents.queue) {
+      item.notifyCount = 0;
+      item.lastNotifiedAt = null;
+      item.lastNotifiedWindow = null;
+    }
+    state.subagents.queueNotices = 0;
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
     const result = await handlePostToolBatch(
       {
         session_id: 'session-queue-context',
@@ -439,10 +453,12 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Urgent production failure/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Use this full urgent prompt/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
     assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /Routine docs scan/);
 
     const report = await buildReport('session-queue-context', env);
-    assert.equal(report.state.subagents.queue[0].notifyCount, 2);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
   });
 });
 
@@ -478,9 +494,108 @@ test('SubagentStop immediately surfaces queued work when capacity opens', async 
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to retry/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued reliability review/);
     assert.match(result.stdout.hookSpecificOutput.additionalContext, /Run this reliability review/);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
+    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
 
     const report = await buildReport('session-queue-stop-notice', env);
     assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+  });
+});
+
+test('PostToolBatch does not repeat a queued prompt after SubagentStop already suggested it', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-single-notice',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-single-notice');
+    queuedInput.tool_input.description = 'Subagent 2 greeting';
+    queuedInput.tool_input.prompt = 'Say exactly: "hello, how are you? I am subagent 2"';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    const firstNotice = await handleSubagentStop(
+      {
+        session_id: 'session-queue-single-notice',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    const duplicateNotice = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-single-notice',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.match(firstNotice.stdout.hookSpecificOutput.additionalContext, /Subagent 2 greeting/);
+    assert.equal(duplicateNotice.exitCode, 0);
+    assert.equal(duplicateNotice.stdout, null);
+
+    const report = await buildReport('session-queue-single-notice', env);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+  });
+});
+
+test('UserPromptSubmit repeats queued work only for explicit continue prompts', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-user-repeat',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-user-repeat');
+    queuedInput.tool_input.description = 'Subagent 3 greeting';
+    queuedInput.tool_input.prompt = 'Say exactly: "hello, how are you? I am subagent 3"';
+    await handlePreToolUseAgent(queuedInput, env);
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-user-repeat',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const unrelatedPrompt = await handleUserPromptSubmit(
+      {
+        session_id: 'session-queue-user-repeat',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'what is going on?'
+      },
+      env
+    );
+    const continuePrompt = await handleUserPromptSubmit(
+      {
+        session_id: 'session-queue-user-repeat',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'continue'
+      },
+      env
+    );
+
+    assert.equal(unrelatedPrompt.exitCode, 0);
+    assert.equal(unrelatedPrompt.stdout, null);
+    assert.match(continuePrompt.stdout.hookSpecificOutput.additionalContext, /Subagent 3 greeting/);
+
+    const report = await buildReport('session-queue-user-repeat', env);
+    assert.equal(report.state.subagents.queue[0].notifyCount, 2);
   });
 });
 

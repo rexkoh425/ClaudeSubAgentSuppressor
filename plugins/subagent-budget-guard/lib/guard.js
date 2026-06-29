@@ -473,6 +473,7 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
     lastQueuedAt: nowIso(),
     lastNotifiedAt: null,
     notifyCount: 0,
+    lastNotifiedWindow: null,
     reason,
     description: identity.description || null,
     subagentType: identity.subagentType || null,
@@ -526,6 +527,7 @@ function formatQueuedAgentContext(item, state, config) {
   const available = Math.max(0, config.max_concurrent_subagents - state.subagents.active);
   return [
     'Queued subagent ready to retry.',
+    'Action required: call the Agent tool with this queued task. Do not answer the queued prompt directly in chat.',
     `Queue id: ${item.queueId}`,
     `Priority: ${Number(item.priority || 0)}`,
     `Attempts: ${Number(item.attempts || 0)}`,
@@ -533,7 +535,7 @@ function formatQueuedAgentContext(item, state, config) {
     `Subagent type: ${item.subagentType || 'unknown'}`,
     `Description: ${item.description || 'no description'}`,
     'Retry this queued Agent task before starting new lower-priority subagent work.',
-    'Use the full original prompt below when retrying:',
+    'Queued Agent prompt to pass to the Agent tool:',
     item.prompt || '(empty prompt)'
   ].join('\n');
 }
@@ -545,7 +547,17 @@ function formatQueuedAgentPendingReason(item, state, config) {
   ].join('\n\n');
 }
 
-async function buildQueuedAgentNotice(sessionId, env, hookEventName) {
+function queuedNoticeWindow(state) {
+  return Number(state.subagents.lifecycleStopped || 0);
+}
+
+function canNotifyQueuedAgent(item, state, { force = false, allowInitial = true } = {}) {
+  if (force) return true;
+  if (!allowInitial) return false;
+  return item.lastNotifiedWindow !== queuedNoticeWindow(state);
+}
+
+async function buildQueuedAgentNotice(sessionId, env, hookEventName, options = {}) {
   const config = loadConfig(env);
   let context = null;
 
@@ -554,9 +566,11 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName) {
 
     const item = nextQueuedAgent(state);
     if (!item) return state;
+    if (!canNotifyQueuedAgent(item, state, options)) return state;
 
     item.notifyCount = Number(item.notifyCount || 0) + 1;
     item.lastNotifiedAt = nowIso();
+    item.lastNotifiedWindow = queuedNoticeWindow(state);
     state.subagents.queueNotices += 1;
     context = formatQueuedAgentContext(item, state, config);
     pushEvent(state, {
@@ -579,6 +593,10 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName) {
     },
     stderr: ''
   };
+}
+
+function isExplicitQueueContinuePrompt(prompt) {
+  return /\b(continue|resume|retry|next|go on|keep going)\b/i.test(String(prompt || ''));
 }
 
 function subagentTokenBudgetStatus(state, config) {
@@ -930,7 +948,11 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   const reason = fiveHourBudgetDecision(state, config);
 
   if (!reason) {
-    const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit');
+    const shouldRepeatQueueNotice = isExplicitQueueContinuePrompt(input?.prompt);
+    const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit', {
+      force: shouldRepeatQueueNotice,
+      allowInitial: shouldRepeatQueueNotice
+    });
     return notice || { exitCode: 0, stdout: null, stderr: '' };
   }
 
