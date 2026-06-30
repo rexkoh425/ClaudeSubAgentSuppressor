@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -11,7 +11,6 @@ import {
   buildReport,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
-  handleUserPromptSubmit,
   installStatusLineBridge,
   pathExists,
   updateRateLimitFromStatusLine
@@ -111,7 +110,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.17', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.18', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -153,10 +152,7 @@ export async function runOfflineVerification({
       'PostToolUse',
       'PostToolBatch',
       'SubagentStart',
-      'SubagentStop',
-      'TaskCreated',
-      'TaskCompleted',
-      'UserPromptSubmit'
+      'SubagentStop'
     ];
     for (const event of requiredEvents) {
       assert(Array.isArray(hooks.hooks?.[event]), `missing hooks.${event}`);
@@ -169,10 +165,8 @@ export async function runOfflineVerification({
   await withCheck(result, 'script-paths', async () => {
     const scripts = [
       'bin/hook.js',
-      'bin/subagent-cap.js',
       'bin/statusline.js',
       'bin/setup.js',
-      'bin/report.js',
       'bin/view.js',
       'bin/verify.js',
       'lib/guard.js',
@@ -184,6 +178,17 @@ export async function runOfflineVerification({
       assert(await pathExists(path.join(root, script)), `missing ${script}`);
     }
     return `${scripts.length} files present`;
+  });
+
+  await withCheck(result, 'two-command-surface', async () => {
+    const commandsDir = path.join(root, 'commands');
+    const commandFiles = (await readdir(commandsDir)).filter((name) => name.endsWith('.md'));
+    assert(
+      commandFiles.length === 1 && commandFiles[0] === 'sub-agent-view.md',
+      `expected only sub-agent-view.md command, got ${commandFiles.join(', ')}`
+    );
+    assert(await pathExists(path.join(root, 'skills', 'init', 'SKILL.md')), 'missing init skill');
+    return '/subagent-cap:init skill plus /sub-agent-view command';
   });
 
   await withCheck(result, 'pretool-agent-denies-default', async () => {
@@ -229,70 +234,47 @@ export async function runOfflineVerification({
     });
   });
 
-  await withCheck(result, 'simulated-statusline-budget-default-passthrough', async () => {
+  await withCheck(result, 'five-hour-warning-gate-blocks-subagent', async () => {
     return withIsolatedPluginEnv(env, root, async (baseEnv) => {
       const checkEnv = {
         ...baseEnv,
-        CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent: '3'
+        CLAUDE_PLUGIN_OPTION_max_concurrent_subagents: '1',
+        CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent: '100'
       };
       await updateRateLimitFromStatusLine(
         {
-          session_id: 'offline-budget',
-          rate_limits: { five_hour: { used_percentage: 10, resets_at: 1 } }
+          session_id: 'offline-five-hour-warning',
+          rate_limits: { five_hour: { used_percentage: 70, resets_at: 1 } }
         },
         checkEnv
       );
       await updateRateLimitFromStatusLine(
         {
-          session_id: 'offline-budget',
-          rate_limits: { five_hour: { used_percentage: 13.5, resets_at: 1 } }
+          session_id: 'offline-five-hour-warning',
+          rate_limits: { five_hour: { used_percentage: 75.1, resets_at: 1 } }
         },
         checkEnv
       );
-      const output = await handleUserPromptSubmit(
+      const output = await handlePreToolUseAgent(
         {
-          session_id: 'offline-budget',
-          hook_event_name: 'UserPromptSubmit',
-          prompt: 'continue'
+          session_id: 'offline-five-hour-warning',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Agent',
+          tool_input: { description: 'verify warning gate', subagent_type: 'Explore' }
         },
         checkEnv
       );
-      assert(output.stdout === null, 'default mode blocked the prompt');
-      return 'default mode allowed prompt: subagent_only';
-    });
-  });
-
-  await withCheck(result, 'simulated-statusline-budget-session-mode-blocks', async () => {
-    return withIsolatedPluginEnv(env, root, async (baseEnv) => {
-      const checkEnv = {
-        ...baseEnv,
-        CLAUDE_PLUGIN_OPTION_enforcement_mode: 'session_budget',
-        CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent: '3'
-      };
-      await updateRateLimitFromStatusLine(
-        {
-          session_id: 'offline-budget-session',
-          rate_limits: { five_hour: { used_percentage: 10, resets_at: 1 } }
-        },
-        checkEnv
+      assert(
+        output.stdout?.hookSpecificOutput?.permissionDecision === 'deny',
+        'Agent launch was not denied at five-hour warning gate'
       );
-      await updateRateLimitFromStatusLine(
-        {
-          session_id: 'offline-budget-session',
-          rate_limits: { five_hour: { used_percentage: 13.5, resets_at: 1 } }
-        },
-        checkEnv
+      assert(
+        /warning threshold 75%/.test(output.stdout.hookSpecificOutput.permissionDecisionReason),
+        'warning gate denial reason missing threshold'
       );
-      const output = await handleUserPromptSubmit(
-        {
-          session_id: 'offline-budget-session',
-          hook_event_name: 'UserPromptSubmit',
-          prompt: 'continue'
-        },
-        checkEnv
-      );
-      assert(output.stdout?.decision === 'block', 'prompt was not blocked in session_budget mode');
-      return `session_budget check only: ${output.stdout.reason}`;
+      const report = await buildReport('offline-five-hour-warning', checkEnv);
+      assert(report.state.subagents.queue[0]?.status === 'budget_blocked', 'blocked launch was not saved as budget_blocked');
+      return output.stdout.hookSpecificOutput.permissionDecisionReason;
     });
   });
 

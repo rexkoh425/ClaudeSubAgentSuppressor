@@ -18,9 +18,6 @@ import {
   handlePreToolUseAgent,
   handleSubagentStart,
   handleSubagentStop,
-  handleTaskCompleted,
-  handleTaskCreated,
-  handleUserPromptSubmit,
   installStatusLineBridge,
   loadConfig,
   updateRateLimitFromStatusLine
@@ -114,8 +111,9 @@ test('recommended setup defaults use two subagents and tighter budget thresholds
   assert.equal(SETUP_CONFIG.max_concurrent_subagents, 2);
   assert.equal(SETUP_CONFIG.max_subagent_tokens_per_session, 500000);
   assert.equal(SETUP_CONFIG.subagent_token_warning_threshold_percent, 80);
+  assert.equal(SETUP_CONFIG.five_hour_warning_threshold_percent, 75);
   assert.equal(SETUP_CONFIG.session_five_hour_budget_percent, 10);
-  assert.equal(SETUP_CONFIG.absolute_five_hour_ceiling_percent, 90);
+  assert.equal(SETUP_CONFIG.absolute_five_hour_ceiling_percent, 85);
   assert.equal(SETUP_CONFIG.enforcement_mode, 'subagent_only');
   assert.equal(SETUP_CONFIG.enforcement_enabled, true);
 });
@@ -131,9 +129,17 @@ test('plugin manifest omits userConfig so install does not ask for config flags'
 test('hooks match both Agent and Task subagent tool events', async () => {
   const hooksPath = path.resolve('plugins/subagent-budget-guard/hooks/hooks.json');
   const hooks = JSON.parse(await readFile(hooksPath, 'utf8')).hooks;
+  const hookEvents = Object.keys(hooks).sort();
   const preToolMatchers = hooks.PreToolUse.map((entry) => entry.matcher).sort();
   const postToolMatchers = hooks.PostToolUse.map((entry) => entry.matcher).sort();
 
+  assert.deepEqual(hookEvents, [
+    'PostToolBatch',
+    'PostToolUse',
+    'PreToolUse',
+    'SubagentStart',
+    'SubagentStop'
+  ]);
   assert.deepEqual(preToolMatchers, ['Agent', 'Task']);
   assert.deepEqual(postToolMatchers, ['Agent', 'Task']);
 });
@@ -150,7 +156,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.17';
+  const expectedVersion = '0.5.18';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -191,6 +197,8 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
   assert.match(text, /Do not add more slash commands/i);
   assert.match(text, /Only offer settings that map to behavior the hooks can actually enforce/i);
   assert.match(text, /post-completion reporting or omit it/i);
+  assert.match(text, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/setup\.js"/);
+  assert.doesNotMatch(text, /bin\/subagent-cap\.js/);
 
   const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
   const command = await readFile(commandPath, 'utf8');
@@ -198,14 +206,19 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
   assert.match(command, /allowed-tools: Bash\(node:\*\)/);
   assert.match(command, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/view\.js"/);
   assert.match(command, /!\`node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/view\.js" \$ARGUMENTS\`/);
+  assert.doesNotMatch(command, /--json/);
 });
 
 test('npm package ships Claude command files', async () => {
   const packageJson = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
   );
+  const binFiles = await readdir(path.resolve('plugins/subagent-budget-guard/bin'));
 
   assert.ok(packageJson.files.includes('commands/'));
+  assert.equal('bin' in packageJson, false);
+  assert.equal(binFiles.includes('subagent-cap.js'), false);
+  assert.equal(binFiles.includes('report.js'), false);
 });
 
 test('setup help and docs avoid unsupported individual token limit controls', async () => {
@@ -227,6 +240,14 @@ test('setup help and docs avoid unsupported individual token limit controls', as
   assert.match(packageReadme, /User-facing controls should stay useful and verifiable/);
   assert.match(rootReadme, /do not present the feature as\s+a mid-run limit/i);
   assert.match(packageReadme, /do not present the feature as\s+a mid-run limit/i);
+  assert.doesNotMatch(stdout, /\bsubagent-cap\s+(init|status|view|doctor)\b/);
+  assert.doesNotMatch(rootReadme, /\bsubagent-cap\s+(init|status|view|doctor)\b/);
+  assert.doesNotMatch(packageReadme, /\bsubagent-cap\s+(init|status|view|doctor)\b/);
+  assert.doesNotMatch(rootReadme, /agent-team/i);
+  assert.doesNotMatch(packageReadme, /agent-team/i);
+  assert.doesNotMatch(stdout, /session_budget/);
+  assert.doesNotMatch(rootReadme, /session_budget/);
+  assert.doesNotMatch(packageReadme, /session_budget/);
 });
 
 test('hook CLI accepts BOM-prefixed JSON from stdin', async () => {
@@ -312,7 +333,7 @@ test('loadConfig reads setup options from Claude settings', async () => {
     assert.equal(config.subagent_token_warning_threshold_percent, 90);
     assert.equal(config.session_five_hour_budget_percent, 15);
     assert.equal(config.absolute_five_hour_ceiling_percent, 88);
-    assert.equal(config.enforcement_mode, 'session_budget');
+    assert.equal(config.enforcement_mode, 'subagent_only');
     assert.equal(config.enforcement_enabled, false);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
@@ -362,6 +383,127 @@ test('PreToolUse Agent blocks on five-hour budget in subagent-only mode', async 
       result.stdout.hookSpecificOutput.permissionDecisionReason,
       /5-hour budget exhausted/
     );
+  });
+});
+
+test('PreToolUse Agent queues and blocks at the five-hour warning gate', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '100';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-five-hour-warning',
+        rate_limits: { five_hour: { used_percentage: 70, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-five-hour-warning',
+        rate_limits: { five_hour: { used_percentage: 75.2, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handlePreToolUseAgent(
+      agentInput('session-agent-five-hour-warning'),
+      env
+    );
+
+    assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /5-hour usage 75\.2% reached the warning threshold 75%/
+    );
+    assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /ask the user to extend/i);
+    assert.match(result.stdout.hookSpecificOutput.permissionDecisionReason, /Queue id: queue-/);
+
+    const report = await buildReport('session-agent-five-hour-warning', env);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].status, 'budget_blocked');
+    assert.match(report.state.subagents.queue[0].reason, /warning threshold/);
+  });
+});
+
+test('budget-blocked queued subagent dispatches after five-hour extension', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '100';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-budget-extension',
+        rate_limits: { five_hour: { used_percentage: 70, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-budget-extension',
+        rate_limits: { five_hour: { used_percentage: 75.2, resets_at: 2000 } }
+      },
+      env
+    );
+
+    await handlePreToolUseAgent(agentInput('session-agent-budget-extension'), env);
+
+    env.CLAUDE_PLUGIN_OPTION_five_hour_warning_threshold_percent = '82';
+    const notice = await handlePostToolBatch(
+      {
+        session_id: 'session-agent-budget-extension',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.match(
+      notice.stdout.hookSpecificOutput.additionalContext,
+      /SUBAGENT_QUEUE_DISPATCH/
+    );
+    assert.match(
+      notice.stdout.hookSpecificOutput.additionalContext,
+      /Queued subagent ready to launch/
+    );
+
+    const report = await buildReport('session-agent-budget-extension', env);
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
+  });
+});
+
+test('PreToolUse Agent hard-stops at the five-hour ceiling without queueing', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '100';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-five-hour-ceiling',
+        rate_limits: { five_hour: { used_percentage: 80, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-agent-five-hour-ceiling',
+        rate_limits: { five_hour: { used_percentage: 85, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const result = await handlePreToolUseAgent(
+      agentInput('session-agent-five-hour-ceiling'),
+      env
+    );
+
+    assert.equal(result.stdout.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(
+      result.stdout.hookSpecificOutput.permissionDecisionReason,
+      /5-hour usage 85\.0% reached the absolute ceiling 85%/
+    );
+
+    const report = await buildReport('session-agent-five-hour-ceiling', env);
+    assert.equal(report.state.subagents.queue.length, 0);
   });
 });
 
@@ -758,14 +900,6 @@ test('Queue notice leases exactly one queued agent until that agent launches', a
       },
       env
     );
-    const repeatedPromptNotice = await handleUserPromptSubmit(
-      {
-        session_id: 'session-queue-dispatch-lease',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue'
-      },
-      env
-    );
     const repeatedBatchNotice = await handlePostToolBatch(
       {
         session_id: 'session-queue-dispatch-lease',
@@ -783,7 +917,6 @@ test('Queue notice leases exactly one queued agent until that agent launches', a
       firstNotice.stdout.hookSpecificOutput.additionalContext,
       /\b(retry|automatically|background|I will|I'll|share the result)\b/i
     );
-    assert.equal(repeatedPromptNotice.stdout, null);
     assert.equal(repeatedBatchNotice.stdout, null);
     assert.equal(wrongQueuedLaunch.stdout.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(
@@ -868,14 +1001,6 @@ test('Five queued subagents dispatch one at a time without repeated queue prompt
       assert.match(context, new RegExp(`hello, i am subagent ${nextNumber}`));
       assert.doesNotMatch(context, /\b(retry|automatically|background|I will|I'll)\b/i);
 
-      const repeatedByPrompt = await handleUserPromptSubmit(
-        {
-          session_id: sessionId,
-          hook_event_name: 'UserPromptSubmit',
-          prompt: 'continue'
-        },
-        env
-      );
       const repeatedByBatch = await handlePostToolBatch(
         {
           session_id: sessionId,
@@ -883,7 +1008,6 @@ test('Five queued subagents dispatch one at a time without repeated queue prompt
         },
         env
       );
-      assert.equal(repeatedByPrompt.stdout, null);
       assert.equal(repeatedByBatch.stdout, null);
 
       if (nextIndex + 1 < inputs.length) {
@@ -915,118 +1039,6 @@ test('Five queued subagents dispatch one at a time without repeated queue prompt
     assert.equal(report.state.subagents.queueNotices, 4);
     assert.equal(report.state.subagents.active, 1);
     assert.equal(report.state.subagents.launching, 0);
-  });
-});
-
-test('UserPromptSubmit does not repeat leased queued work on normal or continue prompts', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
-    await handleSubagentStart(
-      {
-        session_id: 'session-queue-user-repeat',
-        hook_event_name: 'SubagentStart',
-        agent_id: 'agent-active',
-        agent_type: 'Explore'
-      },
-      env
-    );
-
-    const queuedInput = agentInput('session-queue-user-repeat');
-    queuedInput.tool_input.description = 'Subagent 3 greeting';
-    queuedInput.tool_input.prompt = 'Say exactly: "hello, how are you? I am subagent 3"';
-    await handlePreToolUseAgent(queuedInput, env);
-    await handleSubagentStop(
-      {
-        session_id: 'session-queue-user-repeat',
-        hook_event_name: 'SubagentStop',
-        agent_id: 'agent-active',
-        agent_type: 'Explore'
-      },
-      env
-    );
-
-    const unrelatedPrompt = await handleUserPromptSubmit(
-      {
-        session_id: 'session-queue-user-repeat',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'what is going on?'
-      },
-      env
-    );
-    const continuePrompt = await handleUserPromptSubmit(
-      {
-        session_id: 'session-queue-user-repeat',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue'
-      },
-      env
-    );
-
-    assert.equal(unrelatedPrompt.exitCode, 0);
-    assert.equal(unrelatedPrompt.stdout, null);
-    assert.equal(continuePrompt.exitCode, 0);
-    assert.equal(continuePrompt.stdout, null);
-
-    const report = await buildReport('session-queue-user-repeat', env);
-    assert.equal(report.state.subagents.queue[0].notifyCount, 1);
-    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
-  });
-});
-
-test('UserPromptSubmit does not initiate queued work when capacity is available', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
-    const sessionId = 'session-queue-user-no-init';
-    const firstInput = agentInput(sessionId);
-    firstInput.tool_use_id = 'toolu_first_user_no_init';
-    firstInput.tool_input.description = 'Subagent 1 greeting';
-    const queuedInput = agentInput(sessionId);
-    queuedInput.tool_use_id = 'toolu_queued_user_no_init';
-    queuedInput.tool_input.description = 'Subagent 2 greeting';
-    queuedInput.tool_input.prompt = 'Say exactly: "hello, i am subagent 2"';
-
-    const firstLaunch = await handlePreToolUseAgent(firstInput, env);
-    const queued = await handlePreToolUseAgent(queuedInput, env);
-    await handlePostToolUseAgent(
-      {
-        session_id: sessionId,
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Agent',
-        tool_input: firstInput.tool_input,
-        tool_response: {
-          status: 'completed',
-          agentId: 'agent-user-no-init-1',
-          totalTokens: 10,
-          totalDurationMs: 100
-        }
-      },
-      env
-    );
-
-    const promptResult = await handleUserPromptSubmit(
-      {
-        session_id: sessionId,
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue'
-      },
-      env
-    );
-    const batchResult = await handlePostToolBatch(
-      {
-        session_id: sessionId,
-        hook_event_name: 'PostToolBatch'
-      },
-      env
-    );
-
-    assert.equal(firstLaunch.stdout, null);
-    assert.equal(queued.stdout.hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal(promptResult.exitCode, 0);
-    assert.equal(promptResult.stdout, null);
-    assert.match(
-      batchResult.stdout.hookSpecificOutput.additionalContext,
-      /^SUBAGENT_QUEUE_DISPATCH/m
-    );
   });
 });
 
@@ -1213,6 +1225,13 @@ test('PostToolUse Agent records verified subagent tokens and metadata', async ()
 
 test('formatSubagentView lists spawned subagents with tokens and duration', async () => {
   await withTempEnv(async (env) => {
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-view',
+        rate_limits: { five_hour: { used_percentage: 76, resets_at: 2000 } }
+      },
+      env
+    );
     await handlePostToolUseAgent(
       {
         session_id: 'session-view',
@@ -1253,10 +1272,39 @@ test('formatSubagentView lists spawned subagents with tokens and duration', asyn
     assert.match(output, /Verified tokens: 1,234/);
     assert.match(output, /#1 completed Explore "Alpha analysis"/);
     assert.match(output, /tokens: 1,234 verified/);
+    assert.match(output, /Tokens are verified after subagents complete/i);
+    assert.match(output, /5-hour usage: 76\.0% \(warning 75%, ceiling 85%\)/);
+    assert.doesNotMatch(output, /Thinking level:/);
     assert.match(output, /duration: 1\.5s/);
     assert.match(output, /model: claude-sonnet/);
     assert.match(output, /#2 async_launched Research "Background scrape"/);
     assert.match(output, /tokens: pending/);
+  });
+});
+
+test('formatSubagentView shows thinking metadata only when Claude exposes it', async () => {
+  await withTempEnv(async (env) => {
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-view-thinking',
+        hook_event_name: 'PostToolUse',
+        runtime: { effortLevel: 'low', thinkingEnabled: true },
+        tool_name: 'Agent',
+        tool_input: { description: 'Thinking metadata task', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-thinking',
+          totalTokens: 111,
+          totalDurationMs: 300
+        }
+      },
+      env
+    );
+
+    const report = await buildReport('session-view-thinking', env);
+    const output = formatSubagentView(report);
+
+    assert.match(output, /Thinking level: low, thinking enabled/);
   });
 });
 
@@ -1283,6 +1331,39 @@ test('formatSubagentView lists queued subagents without printing full prompts by
     assert.match(output, /Queued security review/);
     assert.match(output, /priority: 50/);
     assert.doesNotMatch(output, /SECRET FULL PROMPT/);
+  });
+});
+
+test('formatSubagentView counts budget-blocked queued subagents separately', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '100';
+
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-view-budget-blocked',
+        rate_limits: { five_hour: { used_percentage: 70, resets_at: 2000 } }
+      },
+      env
+    );
+    await updateRateLimitFromStatusLine(
+      {
+        session_id: 'session-view-budget-blocked',
+        rate_limits: { five_hour: { used_percentage: 75.1, resets_at: 2000 } }
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-view-budget-blocked');
+    queuedInput.tool_input.description = 'Budget blocked review';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    const output = formatSubagentView(await buildReport('session-view-budget-blocked', env));
+
+    assert.match(output, /Queued subagents: 1/);
+    assert.match(output, /Budget-blocked subagents: 1/);
+    assert.match(output, /Budget blocked review/);
+    assert.match(output, /status: budget_blocked/);
   });
 });
 
@@ -1487,6 +1568,49 @@ test('buildReport hydrates async subagent usage from Claude transcript notificat
   }
 });
 
+test('sub-agent-view stays text-only even when legacy --json argument is passed', async () => {
+  await withTempEnv(async (env) => {
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-view-cli-text',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { description: 'Text view task', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-view-cli-text',
+          totalTokens: 321,
+          totalDurationMs: 400,
+          totalToolUseCount: 1
+        }
+      },
+      env
+    );
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/view.js'),
+        '--session',
+        'session-view-cli-text',
+        '--json'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          ...env
+        }
+      }
+    );
+
+    assert.match(stdout, /Sub-agent view for session-view-cli-text/);
+    assert.match(stdout, /Verified tokens: 321/);
+    assert.doesNotMatch(stdout.trimStart(), /^\{/);
+    assert.doesNotMatch(stdout, /"subagents"/);
+  });
+});
+
 test('formatSubagentView explains when no tracked session files exist yet', async () => {
   await withTempEnv(async (env) => {
     const report = await buildReport(null, env);
@@ -1494,7 +1618,7 @@ test('formatSubagentView explains when no tracked session files exist yet', asyn
 
     assert.match(output, /Tracking status: no saved session files found/i);
     assert.match(output, /Subagent run data comes from Agent\/Task hooks/i);
-    assert.match(output, /run subagent-cap doctor --live/i);
+    assert.match(output, /run \/subagent-cap:init again to re-apply setup/i);
     assert.match(output, /Data directory checked:/i);
     assert.match(output, /Configured concurrency: 0/i);
     assert.match(output, /5-hour bridge: not observed yet/i);
@@ -1588,73 +1712,6 @@ test('PreToolUse Agent blocks new subagents after token warning threshold is rea
   });
 });
 
-test('UserPromptSubmit allows normal prompts when subagent token cap is reached', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_max_subagent_tokens_per_session = '1000';
-
-    await handlePostToolUseAgent(
-      {
-        session_id: 'session-token-cap',
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Agent',
-        tool_input: { description: 'Huge analysis', subagent_type: 'Explore' },
-        tool_response: {
-          status: 'completed',
-          agentId: 'agent-cap',
-          totalTokens: 1001
-        }
-      },
-      env
-    );
-
-    const result = await handleUserPromptSubmit(
-      {
-        session_id: 'session-token-cap',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue'
-      },
-      env
-    );
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, null);
-  });
-});
-
-test('UserPromptSubmit allows normal prompts by default when five-hour budget is exhausted', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
-
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-budget-default-pass',
-        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
-      },
-      env
-    );
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-budget-default-pass',
-        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
-      },
-      env
-    );
-
-    const result = await handleUserPromptSubmit(
-      {
-        session_id: 'session-budget-default-pass',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue with normal work'
-      },
-      env
-    );
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, null);
-    assert.equal(result.stderr, '');
-  });
-});
-
 test('PostToolUse Agent marks background launches as lifecycle-counted but not token-verified', async () => {
   await withTempEnv(async (env) => {
     await handlePostToolUseAgent(
@@ -1680,41 +1737,6 @@ test('PostToolUse Agent marks background launches as lifecycle-counted but not t
   });
 });
 
-test('UserPromptSubmit blocks when five-hour session budget mode is opted in and exhausted', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_enforcement_mode = 'session_budget';
-    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
-
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-budget',
-        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
-      },
-      env
-    );
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-budget',
-        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
-      },
-      env
-    );
-
-    const result = await handleUserPromptSubmit(
-      {
-        session_id: 'session-budget',
-        hook_event_name: 'UserPromptSubmit',
-        prompt: 'continue'
-      },
-      env
-    );
-
-    assert.equal(result.stdout.decision, 'block');
-    assert.equal(result.stdout.suppressOriginalPrompt, true);
-    assert.match(result.stdout.reason, /5-hour budget exhausted/);
-  });
-});
-
 test('rate-limit baseline resets when the five-hour window rolls over', async () => {
   await withTempEnv(async (env) => {
     await updateRateLimitFromStatusLine(
@@ -1736,129 +1758,6 @@ test('rate-limit baseline resets when the five-hour window rolls over', async ()
     assert.equal(report.state.rateLimits.fiveHour.baselineUsedPercentage, 8);
     assert.equal(report.state.rateLimits.fiveHour.latestUsedPercentage, 8);
     assert.equal(report.state.rateLimits.fiveHour.resetsAt, 3000);
-  });
-});
-
-test('TaskCreated records agent-team tasks without count-based suppression', async () => {
-  await withTempEnv(async (env) => {
-    const result = await handleTaskCreated(
-      {
-        session_id: 'session-task',
-        hook_event_name: 'TaskCreated',
-        task_id: 'task-1',
-        task_subject: 'Implement auth'
-      },
-      env
-    );
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stderr, '');
-    const report = await buildReport('session-task', env);
-    assert.equal(report.state.agentTeam.created, 1);
-    assert.equal(report.state.agentTeam.denied, 0);
-  });
-});
-
-test('TaskCreated records tasks by default when five-hour budget is exhausted', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
-
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-task-budget-default-pass',
-        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
-      },
-      env
-    );
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-task-budget-default-pass',
-        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
-      },
-      env
-    );
-
-    const result = await handleTaskCreated(
-      {
-        session_id: 'session-task-budget-default-pass',
-        hook_event_name: 'TaskCreated',
-        task_id: 'task-budget-default',
-        task_subject: 'Normal work'
-      },
-      env
-    );
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stderr, '');
-    const report = await buildReport('session-task-budget-default-pass', env);
-    assert.equal(report.state.agentTeam.created, 1);
-    assert.equal(report.state.agentTeam.denied, 0);
-  });
-});
-
-test('TaskCreated blocks when five-hour session budget mode is opted in and exhausted', async () => {
-  await withTempEnv(async (env) => {
-    env.CLAUDE_PLUGIN_OPTION_enforcement_mode = 'session_budget';
-    env.CLAUDE_PLUGIN_OPTION_session_five_hour_budget_percent = '5';
-
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-task-budget-session-block',
-        rate_limits: { five_hour: { used_percentage: 40, resets_at: 2000 } }
-      },
-      env
-    );
-    await updateRateLimitFromStatusLine(
-      {
-        session_id: 'session-task-budget-session-block',
-        rate_limits: { five_hour: { used_percentage: 46.5, resets_at: 2000 } }
-      },
-      env
-    );
-
-    const result = await handleTaskCreated(
-      {
-        session_id: 'session-task-budget-session-block',
-        hook_event_name: 'TaskCreated',
-        task_id: 'task-budget-session',
-        task_subject: 'Session-budget work'
-      },
-      env
-    );
-
-    assert.equal(result.exitCode, 2);
-    assert.match(result.stderr, /5-hour budget exhausted/);
-    const report = await buildReport('session-task-budget-session-block', env);
-    assert.equal(report.state.agentTeam.created, 0);
-    assert.equal(report.state.agentTeam.denied, 1);
-  });
-});
-
-test('TaskCompleted records task completions when completion hook fires', async () => {
-  await withTempEnv(async (env) => {
-    await handleTaskCreated(
-      {
-        session_id: 'session-task-complete',
-        hook_event_name: 'TaskCreated',
-        task_id: 'task-1',
-        task_subject: 'Implement auth'
-      },
-      env
-    );
-
-    await handleTaskCompleted(
-      {
-        session_id: 'session-task-complete',
-        hook_event_name: 'TaskCompleted',
-        task_id: 'task-1',
-        task_subject: 'Implement auth'
-      },
-      env
-    );
-
-    const report = await buildReport('session-task-complete', env);
-    assert.equal(report.state.agentTeam.created, 1);
-    assert.equal(report.state.agentTeam.completed, 1);
   });
 });
 
@@ -1953,8 +1852,9 @@ test('installStatusLineBridge applies setup config and removes obsolete options'
         max_concurrent_subagents: 2,
         max_subagent_tokens_per_session: 500000,
         subagent_token_warning_threshold_percent: 80,
+        five_hour_warning_threshold_percent: 75,
         session_five_hour_budget_percent: 10,
-        absolute_five_hour_ceiling_percent: 90,
+        absolute_five_hour_ceiling_percent: 85,
         enforcement_mode: 'subagent_only',
         enforcement_enabled: true
       });
@@ -1978,19 +1878,17 @@ test('offline verifier validates plugin shape and simulated enforcement', async 
     assert.equal(result.ok, true, result.failures.join('\n'));
     assert.equal(result.failures.length, 0);
     assert.ok(result.checks.some((check) => check.name === 'pretool-agent-denies-default'));
-    assert.ok(
-      result.checks.some(
-        (check) =>
-          check.name === 'simulated-statusline-budget-default-passthrough' &&
-          check.detail.startsWith('default mode allowed prompt:')
-      )
+    assert.equal(
+      result.checks.some((check) => check.name === 'simulated-statusline-budget-default-passthrough'),
+      false
     );
+    assert.equal(
+      result.checks.some((check) => check.name === 'simulated-statusline-budget-session-mode-blocks'),
+      false
+    );
+    assert.ok(result.checks.some((check) => check.name === 'two-command-surface'));
     assert.ok(
-      result.checks.some(
-        (check) =>
-          check.name === 'simulated-statusline-budget-session-mode-blocks' &&
-          check.detail.startsWith('session_budget check only:')
-      )
+      result.checks.some((check) => check.name === 'five-hour-warning-gate-blocks-subagent')
     );
     assert.ok(result.checks.some((check) => check.name === 'setup-applies-plugin-config'));
   });
@@ -2047,11 +1945,13 @@ test('setup CLI applies custom config values over recommended defaults', async (
         '--config',
         'subagent_token_warning_threshold_percent=80',
         '--config',
+        'five_hour_warning_threshold_percent=75',
+        '--config',
         'session_five_hour_budget_percent=10',
         '--config',
         'absolute_five_hour_ceiling_percent=90',
         '--config',
-        'enforcement_mode=session_budget',
+        'enforcement_mode=observe',
         '--config',
         'enforcement_enabled=false'
       ],
@@ -2076,9 +1976,10 @@ test('setup CLI applies custom config values over recommended defaults', async (
     assert.equal(options.max_concurrent_subagents, 3);
     assert.equal(options.max_subagent_tokens_per_session, 250000);
     assert.equal(options.subagent_token_warning_threshold_percent, 80);
+    assert.equal(options.five_hour_warning_threshold_percent, 75);
     assert.equal(options.session_five_hour_budget_percent, 10);
     assert.equal(options.absolute_five_hour_ceiling_percent, 90);
-    assert.equal(options.enforcement_mode, 'session_budget');
+    assert.equal(options.enforcement_mode, 'observe');
     assert.equal(options.enforcement_enabled, false);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
@@ -2118,6 +2019,7 @@ test('setup CLI applies friendly preset choices', async () => {
     assert.equal(options.max_concurrent_subagents, 1);
     assert.equal(options.max_subagent_tokens_per_session, 250000);
     assert.equal(options.subagent_token_warning_threshold_percent, 70);
+    assert.equal(options.five_hour_warning_threshold_percent, 70);
     assert.equal(options.session_five_hour_budget_percent, 5);
     assert.equal(options.absolute_five_hour_ceiling_percent, 85);
     assert.equal(options.enforcement_mode, 'subagent_only');
@@ -2207,6 +2109,67 @@ test('setup CLI friendly set aliases preserve existing settings', async () => {
   }
 });
 
+test('setup CLI extend-five-hour raises warning, session budget, and ceiling', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    const claudeDir = path.join(homeDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'subagent-cap@subagent-tools': {
+            options: {
+              max_concurrent_subagents: 2,
+              max_subagent_tokens_per_session: 500000,
+              subagent_token_warning_threshold_percent: 80,
+              five_hour_warning_threshold_percent: 75,
+              session_five_hour_budget_percent: 10,
+              absolute_five_hour_ceiling_percent: 85,
+              enforcement_mode: 'subagent_only',
+              enforcement_enabled: true
+            }
+          }
+        }
+      })
+    );
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+        '--extend-five-hour',
+        '2'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    const options =
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options;
+
+    assert.equal(options.five_hour_warning_threshold_percent, 77);
+    assert.equal(options.session_five_hour_budget_percent, 12);
+    assert.equal(options.absolute_five_hour_ceiling_percent, 87);
+    assert.match(stdout, /Preset: Extended Current \(\+2%\)/);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('setup CLI rejects individual token-limit alias', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
@@ -2269,7 +2232,7 @@ test('setup CLI rejects unknown friendly setting names', async () => {
   }
 });
 
-test('subagent-cap init writes short plugin config id', async () => {
+test('setup script writes short plugin config id', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
   try {
@@ -2285,8 +2248,7 @@ test('subagent-cap init writes short plugin config id', async () => {
     await execFileAsync(
       process.execPath,
       [
-        path.resolve('plugins/subagent-budget-guard/bin/subagent-cap.js'),
-        'init',
+        path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
         '--defaults'
       ],
       {
@@ -2321,13 +2283,18 @@ test('subagent-cap init writes short plugin config id', async () => {
     );
     assert.equal(
       settings.pluginConfigs['subagent-cap@subagent-tools'].options
+        .five_hour_warning_threshold_percent,
+      75
+    );
+    assert.equal(
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options
         .session_five_hour_budget_percent,
       10
     );
     assert.equal(
       settings.pluginConfigs['subagent-cap@subagent-tools'].options
         .absolute_five_hour_ceiling_percent,
-      90
+      85
     );
   } finally {
     await rm(homeDir, { recursive: true, force: true });

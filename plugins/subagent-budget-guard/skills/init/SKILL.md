@@ -24,6 +24,7 @@ Ask the user to choose one setup path:
 3. Observe Only - record usage without blocking subagents.
 4. Custom - choose each setting with plain-English labels.
 5. Adjust Current - change only selected settings and preserve the rest.
+6. Extend Current Session - raise the five-hour warning gate, session budget, and ceiling.
 
 Preset values:
 
@@ -31,15 +32,17 @@ Preset values:
 Balanced
   Subagents at once: 2
   Verified session token cap: 500000
-  Warning at: 80%
+  Token warning at: 80%
+  5-hour warning gate: 75%
   5-hour budget: 10 percentage points
-  5-hour ceiling: 90%
+  5-hour ceiling: 85%
   Mode: Only limit subagents
 
 Strict
   Subagents at once: 1
   Verified session token cap: 250000
-  Warning at: 70%
+  Token warning at: 70%
+  5-hour warning gate: 70%
   5-hour budget: 5 percentage points
   5-hour ceiling: 85%
   Mode: Only limit subagents
@@ -47,9 +50,10 @@ Strict
 Observe Only
   Subagents at once: 2
   Verified session token cap: 500000
-  Warning at: 80%
+  Token warning at: 80%
+  5-hour warning gate: 75%
   5-hour budget: 10 percentage points
-  5-hour ceiling: 90%
+  5-hour ceiling: 85%
   Mode: Record only, do not block
 ```
 
@@ -58,19 +62,19 @@ Observe Only
 If they choose Balanced, run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init --preset balanced
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" --preset balanced
 ```
 
 If they choose Strict, run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init --preset strict
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" --preset strict
 ```
 
 If they choose Observe Only, run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init --preset observe
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" --preset observe
 ```
 
 If they choose Custom, ask for these plain-English values. A blank answer means
@@ -78,20 +82,22 @@ use the Balanced value:
 
 - Subagents at once.
 - Verified session token cap.
-- Warning at percent.
+- Token warning at percent.
+- 5-hour warning gate percent.
 - 5-hour budget percentage points.
 - 5-hour ceiling percent.
-- Mode: `subagent_only`, `session_budget`, or `observe`.
+- Mode: `subagent_only` or `observe`.
 - Enforcement enabled: `true` or `false`.
 
 Then run one command using `--preset balanced` plus `--set` for values they changed:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" \
   --preset balanced \
   --set agents=<value> \
   --set session-token-cap=<value> \
   --set warn-at=<value> \
+  --set five-hour-warning=<value> \
   --set five-hour-budget=<value> \
   --set five-hour-ceiling=<value> \
   --set mode=<value> \
@@ -102,10 +108,11 @@ If they choose Adjust Current, ask which fields to change. Do not ask for every
 setting. Then run one command using only the changed values:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" \
   --set agents=<value> \
   --set session-token-cap=<value> \
   --set warn-at=<value> \
+  --set five-hour-warning=<value> \
   --set five-hour-budget=<value> \
   --set five-hour-ceiling=<value> \
   --set mode=<value> \
@@ -114,19 +121,38 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
 
 Omit unchanged `--set` entries.
 
+If they choose Extend Current Session, explain that this only affects future
+subagent launches. Already-running subagents can only report verified token
+usage after they complete. Offer:
+
+1. Default extension: `+2%`.
+2. Recommended extension: choose the smaller of `+5%` or the remaining room
+   before `100%`.
+3. Custom extension: user-provided percentage points.
+
+Then run:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/setup.js" --extend-five-hour <percentage-points>
+```
+
+If the user does not choose a value, use `2`.
+
 The verified session token cap is checked from completed subagent tool event token
 totals after each subagent finishes. It is not an individual running subagent limit
 and cannot stop a subagent mid-run.
 
+Claude Code may allow model or effort changes outside this plugin, but current
+hooks do not reliably expose per-subagent thinking level. Do not claim this
+plugin can control or verify thinking level per subagent. `/sub-agent-view`
+shows effort or thinking only if Claude Code exposes it in hook/statusLine data.
+
 ## After Setup
 
-Tell the user to fully exit and reopen Claude Code so the updated hooks and
-statusLine bridge load for future messages.
+Tell the user to fully exit and reopen Claude Code after first setup or after a
+plugin update so updated hooks and the statusLine bridge load for future
+messages.
 Do not try to restart Claude Code automatically; restarting can interrupt the
 active conversation and discard context.
-
-For optional terminal verification, run:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" doctor --live
-```
+After restart, tell them to send one normal message and then use `/sub-agent-view`.
+Do not suggest terminal verification unless the user explicitly asks for it.
