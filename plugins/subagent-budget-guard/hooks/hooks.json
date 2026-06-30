@@ -15,11 +15,41 @@
             "statusMessage": "Checking subagent budget"
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
+              "pretool-agent"
+            ],
+            "timeout": 10,
+            "statusMessage": "Checking subagent budget"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
+              "posttool-agent"
+            ],
+            "timeout": 10,
+            "statusMessage": "Recording subagent usage"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
         "hooks": [
           {
             "type": "command",

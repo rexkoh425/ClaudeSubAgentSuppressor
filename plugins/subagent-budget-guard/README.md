@@ -4,9 +4,9 @@ Subagent Cap is a Claude Code plugin that limits subagent concurrency, records
 verified subagent usage, and provides a post-session view of how many subagents
 ran, how many tokens they used, and how long they took.
 
-The default mode is intentionally narrow: it only controls Claude Code `Agent`
-tool launches. Normal prompts, shell commands, file edits, and other Claude Code
-tools continue normally.
+The default mode is intentionally narrow: it only controls Claude Code subagent
+tool launches reported as `Agent` or `Task` hook events. Normal prompts, shell
+commands, file edits, and other Claude Code tools continue normally.
 
 ## Quick Install
 
@@ -115,8 +115,8 @@ Friendly names map to the stable internal config keys, so existing installs and
 saved settings remain compatible.
 
 The session token cap is verified only after each subagent completes and reports
-`Agent.totalTokens`. It is not an individual running subagent limit and cannot
-stop a subagent mid-run.
+completed subagent tool event total tokens. It is not an individual running
+subagent limit and cannot stop a subagent mid-run.
 
 ## Configuration
 
@@ -130,9 +130,9 @@ stop a subagent mid-run.
 | `enforcement_mode` | `subagent_only` | `subagent_only` | Scope of blocking behavior. |
 | `enforcement_enabled` | `true` | `true` | Set `false` to record activity without blocking. |
 
-`subagent_only` is the default. It can block or queue only `Agent` tool launches.
-Normal user prompts and task creation are allowed even when the tracked 5-hour
-budget is exhausted.
+`subagent_only` is the default. It can block or queue only subagent tool launches
+reported as `Agent` or `Task`. Normal user prompts and task creation are allowed
+even when the tracked 5-hour budget is exhausted.
 
 `session_budget` is stricter. It keeps the subagent limits and also allows the
 plugin to suppress broader prompt/task activity after the configured 5-hour
@@ -149,17 +149,17 @@ an MCP server, or change the Claude model.
 The important flow is:
 
 ```text
-Claude tries Agent tool
-  -> PreToolUse Agent hook checks local state and config
+Claude tries Agent/Task subagent tool
+  -> PreToolUse Agent/Task hook checks local state and config
   -> allowed, denied, or saved to queue
 
 Subagent starts/stops
   -> SubagentStart/SubagentStop update active counts
   -> when capacity opens, queued work can be surfaced once
 
-Agent tool completes
-  -> PostToolUse Agent records verified totalTokens, duration, model, tools
-  -> token warning/cap can block later Agent launches
+Agent/Task tool completes
+  -> PostToolUse Agent/Task records verified totalTokens, duration, model, tools
+  -> token warning/cap can block later subagent launches
 
 Tool batch ends
   -> PostToolBatch may surface one queued subagent if a slot is free
@@ -171,9 +171,9 @@ User submits prompt
 
 The queue is not an autonomous worker. Hooks cannot secretly spawn a subagent.
 When a queued item is ready, the plugin returns a compact
-`SUBAGENT_QUEUE_DISPATCH` context block telling Claude to call the `Agent` tool
-exactly once for that queued item. A dispatch lease prevents repeated reminders
-for the same queued work.
+`SUBAGENT_QUEUE_DISPATCH` context block telling Claude to call the matching
+subagent tool exactly once for that queued item. A dispatch lease prevents
+repeated reminders for the same queued work.
 
 ## Trust And Safety Model
 

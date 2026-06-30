@@ -1,6 +1,6 @@
 {
   "name": "claude-subagent-budget-guard-marketplace",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "private": true,
   "type": "module",
   "scripts": {

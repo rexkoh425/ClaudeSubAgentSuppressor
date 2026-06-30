@@ -114,9 +114,9 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
 
 Omit unchanged `--set` entries.
 
-The verified session token cap is checked from completed `Agent.totalTokens`
-after each subagent finishes. It is not an individual running subagent limit and
-cannot stop a subagent mid-run.
+The verified session token cap is checked from completed subagent tool event token
+totals after each subagent finishes. It is not an individual running subagent limit
+and cannot stop a subagent mid-run.
 
 ## After Setup
 

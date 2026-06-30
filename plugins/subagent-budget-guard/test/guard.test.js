@@ -124,6 +124,16 @@ test('plugin manifest omits userConfig so install does not ask for config flags'
   assert.equal(manifest.userConfig, undefined);
 });
 
+test('hooks match both Agent and Task subagent tool events', async () => {
+  const hooksPath = path.resolve('plugins/subagent-budget-guard/hooks/hooks.json');
+  const hooks = JSON.parse(await readFile(hooksPath, 'utf8')).hooks;
+  const preToolMatchers = hooks.PreToolUse.map((entry) => entry.matcher).sort();
+  const postToolMatchers = hooks.PostToolUse.map((entry) => entry.matcher).sort();
+
+  assert.deepEqual(preToolMatchers, ['Agent', 'Task']);
+  assert.deepEqual(postToolMatchers, ['Agent', 'Task']);
+});
+
 test('marketplace exposes the subagent-cap install name', async () => {
   const marketplace = JSON.parse(
     await readFile(path.resolve('.claude-plugin/marketplace.json'), 'utf8')
@@ -136,7 +146,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.15';
+  const expectedVersion = '0.5.16';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1272,14 +1282,148 @@ test('formatSubagentView lists queued subagents without printing full prompts by
   });
 });
 
+test('Task tool launches are tracked and queued as subagents', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-task-tool',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const taskInput = agentInput('session-task-tool');
+    taskInput.tool_name = 'Task';
+    taskInput.tool_input.description = 'Queued task subagent';
+    const queued = await handlePreToolUseAgent(taskInput, env);
+
+    assert.match(
+      queued.stdout.hookSpecificOutput.permissionDecisionReason,
+      /Subagent launch saved to queue/
+    );
+
+    const report = await buildReport('session-task-tool', env);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].toolName, 'Task');
+
+    const notice = await handleSubagentStop(
+      {
+        session_id: 'session-task-tool',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    assert.match(
+      notice.stdout.hookSpecificOutput.additionalContext,
+      /Call the Task tool exactly once/
+    );
+  });
+});
+
+test('buildReport discovers saved sessions from sibling plugin data directories', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const altDataDir = path.join(homeDir, '.claude', 'plugins', 'data', 'subagent-cap-runtime');
+  try {
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-discovered-view',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Task',
+        tool_input: { description: 'Discovered task', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-discovered',
+          resolvedModel: 'claude-sonnet',
+          totalTokens: 321,
+          totalToolUseCount: 1,
+          totalDurationMs: 500
+        }
+      },
+      {
+        USERPROFILE: homeDir,
+        HOME: homeDir,
+        CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+        CLAUDE_PLUGIN_DATA: altDataDir
+      }
+    );
+
+    const report = await buildReport(null, {
+      USERPROFILE: homeDir,
+      HOME: homeDir,
+      CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard')
+    });
+
+    assert.equal(report.sessionId, 'session-discovered-view');
+    assert.equal(report.dataDir, path.resolve(altDataDir));
+    assert.equal(report.state.subagents.runs.length, 1);
+    assert.equal(report.state.subagents.verifiedTokens, 321);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('buildReport discovers saved sessions from configured statusLine data path', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-runtime-data-'));
+  try {
+    await installStatusLineBridge({
+      homeDir,
+      pluginRoot: path.resolve('plugins/subagent-budget-guard'),
+      pluginData: dataDir,
+      setupConfig: SETUP_CONFIG
+    });
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-statusline-data-view',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Task',
+        tool_input: { description: 'StatusLine data path task', subagent_type: 'Explore' },
+        tool_response: {
+          status: 'completed',
+          agentId: 'agent-statusline-data',
+          totalTokens: 654,
+          totalDurationMs: 700,
+          totalToolUseCount: 1
+        }
+      },
+      {
+        USERPROFILE: homeDir,
+        HOME: homeDir,
+        CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+        CLAUDE_PLUGIN_DATA: dataDir
+      }
+    );
+
+    const report = await buildReport(null, {
+      USERPROFILE: homeDir,
+      HOME: homeDir,
+      CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard')
+    });
+
+    assert.equal(report.sessionId, 'session-statusline-data-view');
+    assert.equal(report.dataDir, path.resolve(dataDir));
+    assert.equal(report.state.subagents.verifiedTokens, 654);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('formatSubagentView explains when no tracked session files exist yet', async () => {
   await withTempEnv(async (env) => {
     const report = await buildReport(null, env);
     const output = formatSubagentView(report);
 
     assert.match(output, /Tracking status: no saved session files found/i);
-    assert.match(output, /Subagent run data comes from Agent hooks/i);
-    assert.match(output, /If you just ran init or updated the plugin in this Claude Code session, restart Claude Code/i);
+    assert.match(output, /Subagent run data comes from Agent\/Task hooks/i);
+    assert.match(output, /run subagent-cap doctor --live/i);
+    assert.match(output, /Data directory checked:/i);
     assert.match(output, /Configured concurrency: 0/i);
     assert.match(output, /5-hour bridge: not observed yet/i);
     assert.doesNotMatch(output, /status line bridge wasn't initialized with a fresh session/i);
@@ -1300,7 +1444,7 @@ test('formatSubagentView explains empty tracked session without blaming statusLi
     const report = await buildReport('session-empty-view', env);
     const output = formatSubagentView(report);
 
-    assert.match(output, /Tracking status: session file exists, but no Agent hook events were recorded/i);
+    assert.match(output, /Tracking status: session file exists, but no Agent\/Task hook events were recorded/i);
     assert.match(output, /5-hour bridge: observed/i);
     assert.match(output, /Run at least one subagent after the plugin is loaded/i);
     assert.doesNotMatch(output, /status line bridge wasn't initialized with a fresh session/i);

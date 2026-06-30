@@ -96,20 +96,30 @@ function settingsPathForEnv(env) {
   return path.join(homeDir || os.homedir(), '.claude', 'settings.json');
 }
 
-function readSettingsOptions(env) {
+function readSettings(env) {
   const settingsPath = settingsPathForEnv(env);
   if (!settingsPath) return {};
 
   try {
     const text = readFileSync(settingsPath, 'utf8');
-    const settings = JSON.parse(text.replace(/^\uFEFF/, ''));
-    const options = settings?.pluginConfigs?.[PLUGIN_ID]?.options;
-    return isPlainObject(options) ? options : {};
+    return JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch (error) {
     if (error.code === 'ENOENT') return {};
     if (error instanceof SyntaxError) return {};
     throw error;
   }
+}
+
+function readSettingsOptions(env) {
+  const options = readSettings(env)?.pluginConfigs?.[PLUGIN_ID]?.options;
+  return isPlainObject(options) ? options : {};
+}
+
+function statusLineDataDirFromSettings(env) {
+  const command = readSettings(env)?.statusLine?.command;
+  if (typeof command !== 'string') return null;
+  const match = command.match(/(?:^|\s)--data\s+(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  return match?.[1] || match?.[2] || match?.[3] || null;
 }
 
 function applyConfigValues(config, valueForKey) {
@@ -187,8 +197,16 @@ export function getDataDir(env = process.env) {
   return path.join(getHomeDir(env), '.claude', 'plugins', 'data', PLUGIN_NAME);
 }
 
+function dataRootDir(env = process.env) {
+  return path.join(getHomeDir(env), '.claude', 'plugins', 'data');
+}
+
+function stateDirForDataDir(dataDir) {
+  return path.join(dataDir, 'sessions');
+}
+
 function stateDir(env) {
-  return path.join(getDataDir(env), 'sessions');
+  return stateDirForDataDir(getDataDir(env));
 }
 
 function stateFile(sessionId, env) {
@@ -441,6 +459,11 @@ function agentIdentity(input) {
   };
 }
 
+function subagentToolName(input) {
+  const toolName = normalizeText(input?.tool_name);
+  return toolName || 'Agent';
+}
+
 function agentFingerprint(input) {
   const identity = agentIdentity(input);
   return createHash('sha256')
@@ -487,6 +510,7 @@ function syncQueueItems(state) {
   state.subagents.queue = Array.isArray(state.subagents.queue) ? state.subagents.queue : [];
   for (const item of state.subagents.queue) {
     item.status = item.status || 'queued';
+    item.toolName = item.toolName || 'Agent';
     item.dispatchLeaseId = item.dispatchLeaseId || null;
     item.dispatchLeaseAt = item.dispatchLeaseAt || null;
     item.dispatchHookEventName = item.dispatchHookEventName || null;
@@ -543,6 +567,7 @@ function reserveLaunchSlot(state, input, queueId = null) {
     fingerprint: agentFingerprint(input),
     reservedAt: nowIso(),
     queueId,
+    toolName: subagentToolName(input),
     toolUseId: input?.tool_use_id || null,
     description: identity.description || null,
     subagentType: identity.subagentType || null
@@ -622,6 +647,7 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
   const item = {
     queueId,
     fingerprint,
+    toolName: subagentToolName(input),
     status: 'queued',
     priority: agentQueuePriority(input),
     attempts: 1,
@@ -717,6 +743,7 @@ function canRetryQueuedAgent(state, config) {
 
 function formatQueuedAgentContext(item, state, config) {
   const available = Math.max(0, config.max_concurrent_subagents - occupiedSubagentSlots(state));
+  const toolName = item.toolName || 'Agent';
   return [
     'SUBAGENT_QUEUE_DISPATCH',
     'Queued subagent ready to launch.',
@@ -727,20 +754,21 @@ function formatQueuedAgentContext(item, state, config) {
     `Concurrency available: ${available}/${config.max_concurrent_subagents}`,
     `Subagent type: ${item.subagentType || 'unknown'}`,
     `Description: ${item.description || 'no description'}`,
-    'Action: Call the Agent tool exactly once now; no prose before the tool call.',
+    `Action: Call the ${toolName} tool exactly once now; no prose before the tool call.`,
     'Do not answer the queued prompt directly in chat.',
     'Do not launch any other queued item until another SUBAGENT_QUEUE_DISPATCH block appears.',
-    'Queued Agent prompt to pass to the Agent tool:',
+    `Queued subagent prompt to pass to the ${toolName} tool:`,
     item.prompt || '(empty prompt)'
   ].join('\n');
 }
 
 function formatQueuedAgentPendingReason(item, state, config) {
+  const toolName = item?.toolName || 'Agent';
   return [
-    'Queued subagent pending. Do not start this Agent yet.',
+    `Queued subagent pending. Do not start this ${toolName} yet.`,
     `Next queued task: ${queuedAgentSummary(item)} (${item.queueId}).`,
     `Concurrency available: ${Math.max(0, config.max_concurrent_subagents - occupiedSubagentSlots(state))}/${config.max_concurrent_subagents}`,
-    'Do not launch this attempted Agent call again now; wait for a queue notice for the queued task.'
+    'Do not launch this attempted subagent call again now; wait for a queue notice for the queued task.'
   ].join('\n\n');
 }
 
@@ -1232,18 +1260,20 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   };
 }
 
-async function listSessionIds(env = process.env) {
+async function listSessionIdsFromDataDir(dataDir) {
   try {
-    const entries = await readdir(stateDir(env));
+    const sessionsPath = stateDirForDataDir(dataDir);
+    const entries = await readdir(sessionsPath);
     const jsonEntries = await Promise.all(
       entries
         .filter((entry) => entry.endsWith('.json'))
         .map(async (entry) => {
-          const filePath = path.join(stateDir(env), entry);
+          const filePath = path.join(sessionsPath, entry);
           const fileStat = await stat(filePath);
           return {
             sessionId: entry.slice(0, -'.json'.length),
-            mtimeMs: fileStat.mtimeMs
+            mtimeMs: fileStat.mtimeMs,
+            dataDir
           };
         })
     );
@@ -1254,16 +1284,78 @@ async function listSessionIds(env = process.env) {
   }
 }
 
+async function listSessionIds(env = process.env) {
+  return listSessionIdsFromDataDir(getDataDir(env));
+}
+
+function addUniquePath(paths, value) {
+  if (!value) return;
+  const normalized = path.resolve(value);
+  if (!paths.includes(normalized)) paths.push(normalized);
+}
+
+async function candidateDataDirs(env = process.env) {
+  const candidates = [];
+  addUniquePath(candidates, env.CLAUDE_PLUGIN_DATA);
+  addUniquePath(candidates, statusLineDataDirFromSettings(env));
+  addUniquePath(candidates, path.join(dataRootDir(env), PLUGIN_NAME));
+  addUniquePath(candidates, path.join(dataRootDir(env), PLUGIN_ID));
+  addUniquePath(candidates, path.join(dataRootDir(env), 'subagent-budget-guard'));
+
+  try {
+    const entries = await readdir(dataRootDir(env), { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && /subagent/i.test(entry.name)) {
+        addUniquePath(candidates, path.join(dataRootDir(env), entry.name));
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  return candidates;
+}
+
+async function resolveReportSource(sessionId, env = process.env) {
+  const dataDirs = await candidateDataDirs(env);
+  const sources = [];
+
+  for (const dataDir of dataDirs) {
+    const sessions = await listSessionIdsFromDataDir(dataDir);
+    sources.push({ dataDir, sessions });
+  }
+
+  const nonEmpty = sources.filter((source) => source.sessions.length > 0);
+  if (sessionId) {
+    const exact = nonEmpty.find((source) =>
+      source.sessions.some((item) => item.sessionId === sessionId)
+    );
+    if (exact) return exact;
+  }
+
+  const latest = nonEmpty
+    .map((source) => ({ ...source, latestMtimeMs: source.sessions[0]?.mtimeMs || 0 }))
+    .sort((a, b) => b.latestMtimeMs - a.latestMtimeMs)[0];
+  if (latest) return latest;
+
+  return {
+    dataDir: getDataDir(env),
+    sessions: []
+  };
+}
+
 export async function latestSessionId(env = process.env) {
-  const sessions = await listSessionIds(env);
-  return sessions[0]?.sessionId || null;
+  const source = await resolveReportSource(null, env);
+  return source.sessions[0]?.sessionId || null;
 }
 
 export async function buildReport(sessionId, env = process.env) {
-  const sessions = await listSessionIds(env);
+  const source = await resolveReportSource(sessionId, env);
+  const reportEnv = { ...env, CLAUDE_PLUGIN_DATA: source.dataDir };
+  const sessions = source.sessions;
   const resolvedSessionId = sessionId || sessions[0]?.sessionId || 'unknown-session';
   const sessionFound = sessions.some((item) => item.sessionId === resolvedSessionId);
-  const state = await readState(resolvedSessionId, env);
+  const state = await readState(resolvedSessionId, reportEnv);
   const config = loadConfig(env);
   const fiveHour = state.rateLimits.fiveHour;
   const consumed =
@@ -1277,6 +1369,7 @@ export async function buildReport(sessionId, env = process.env) {
     sessionId: resolvedSessionId,
     sessionFound,
     recentSessions: sessions.slice(0, 5),
+    dataDir: source.dataDir,
     config,
     state,
     summary: {
@@ -1345,16 +1438,17 @@ export function formatSubagentView(report) {
     if (!report.sessionFound) {
       lines.push('Tracking status: no saved session files found.');
     } else {
-      lines.push('Tracking status: session file exists, but no Agent hook events were recorded.');
+      lines.push('Tracking status: session file exists, but no Agent/Task hook events were recorded.');
     }
     lines.push(
-      'Subagent run data comes from Agent hooks; the statusLine bridge only provides 5-hour budget data.'
+      'Subagent run data comes from Agent/Task hooks; the statusLine bridge only provides 5-hour budget data.'
     );
+    lines.push(`Data directory checked: ${report.dataDir || getDataDir()}`);
     lines.push(
       'Run at least one subagent after the plugin is loaded, or pass --session <session-id> to inspect a specific saved session.'
     );
     lines.push(
-      'If you just ran init or updated the plugin in this Claude Code session, restart Claude Code so hooks and statusLine load for new messages.'
+      'If this still happens after restart and after running subagents, run subagent-cap doctor --live because Claude Code is not sending matching hook events to the plugin.'
     );
     if (report.recentSessions?.length) {
       lines.push(
