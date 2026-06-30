@@ -78,9 +78,11 @@ const PRESETS = Object.freeze({
   }
 });
 
-function usage() {
-  return [
-    'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]',
+function usage({ internal = false } = {}) {
+  const lines = [
+    internal
+      ? 'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]'
+      : 'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive]',
     '',
     'Friendly settings:',
     '  agents              subagents at once',
@@ -96,7 +98,13 @@ function usage() {
     '  setup --preset balanced',
     '  setup --set agents=3 --set warn-at=75',
     '  setup --extend-five-hour 2',
-    '  setup --preset balanced --set session-token-cap=750000',
+    '  setup --preset balanced --set session-token-cap=750000'
+  ];
+
+  if (!internal) return lines.join('\n');
+
+  return [
+    ...lines,
     '',
     'Internal config keys still work with --config:',
     ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
@@ -157,6 +165,10 @@ function parseArgs(args) {
     const arg = args[index];
     if (arg === '--help' || arg === '-h') {
       process.stdout.write(`${usage()}\n`);
+      process.exit(0);
+    }
+    if (arg === '--help-internal') {
+      process.stdout.write(`${usage({ internal: true })}\n`);
       process.exit(0);
     }
     if (arg === '--interactive') {
