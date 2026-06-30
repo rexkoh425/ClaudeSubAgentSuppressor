@@ -164,7 +164,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.22';
+  const expectedVersion = '0.5.23';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1633,6 +1633,36 @@ test('sub-agent-view stays text-only even when legacy --json argument is passed'
     assert.doesNotMatch(stdout.trimStart(), /^\{/);
     assert.doesNotMatch(stdout, /"subagents"/);
   });
+});
+
+test('sub-agent-view reports setup errors without stack traces', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    await mkdir(path.join(homeDir, '.claude', 'settings.json'), { recursive: true });
+
+    const result = await execNodeWithInput(
+      [path.resolve('plugins/subagent-budget-guard/bin/view.js')],
+      '',
+      {
+        env: {
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /sub-agent-view failed:/);
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+    assert.doesNotMatch(result.stderr, /file:\/\//);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 test('formatSubagentView explains when no tracked session files exist yet', async () => {
