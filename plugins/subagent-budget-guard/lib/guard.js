@@ -223,6 +223,8 @@ function initialState(sessionId) {
     sessionId,
     createdAt: nowIso(),
     updatedAt: nowIso(),
+    transcriptPath: null,
+    cwd: null,
     subagents: {
       requested: 0,
       allowed: 0,
@@ -315,6 +317,8 @@ async function readState(sessionId, env) {
 
 function normalizeState(state, sessionId) {
   const fresh = initialState(sessionId);
+  state.transcriptPath = state.transcriptPath || fresh.transcriptPath;
+  state.cwd = state.cwd || fresh.cwd;
   state.subagents = { ...fresh.subagents, ...(state.subagents || {}) };
   state.subagents.launchReservations = Array.isArray(state.subagents.launchReservations)
     ? state.subagents.launchReservations
@@ -345,6 +349,11 @@ async function updateState(sessionId, env, updater) {
   } finally {
     await release();
   }
+}
+
+function rememberSessionContext(state, input = {}) {
+  if (input.transcript_path) state.transcriptPath = input.transcript_path;
+  if (input.cwd) state.cwd = input.cwd;
 }
 
 function pushEvent(state, event) {
@@ -1058,10 +1067,12 @@ export async function handlePostToolUseAgent(input, env = process.env) {
   let tokenBudgetNotice = null;
 
   await updateState(sessionId, env, (state) => {
+    rememberSessionContext(state, input);
     releaseLaunchReservation(state, input, { fallbackToOldest: false });
     const run = {
       at: nowIso(),
       agentId: response.agentId || null,
+      toolUseId: input?.tool_use_id || null,
       status,
       description: input?.tool_input?.description || null,
       subagentType: input?.tool_input?.subagent_type || null,
@@ -1134,6 +1145,7 @@ export async function handlePostToolBatch(input, env = process.env) {
 export async function handleSubagentStart(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   await updateState(sessionId, env, (state) => {
+    rememberSessionContext(state, input);
     releaseLaunchReservation(state, input);
     state.subagents.lifecycleStarted += 1;
     state.subagents.active += 1;
@@ -1151,6 +1163,7 @@ export async function handleSubagentStart(input, env = process.env) {
 export async function handleSubagentStop(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   await updateState(sessionId, env, (state) => {
+    rememberSessionContext(state, input);
     pruneStaleLaunchReservations(state);
     state.subagents.lifecycleStopped += 1;
     state.subagents.active = Math.max(0, state.subagents.active - 1);
@@ -1260,6 +1273,120 @@ export async function handleUserPromptSubmit(input, env = process.env) {
   };
 }
 
+function xmlValue(text, tag) {
+  const match = String(text || '').match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return match ? match[1].trim() : null;
+}
+
+function parseTaskNotification(content) {
+  if (!String(content || '').includes('<task-notification>')) return null;
+  const tokens = asNumber(xmlValue(content, 'subagent_tokens'), 0);
+  return {
+    taskId: xmlValue(content, 'task-id'),
+    toolUseId: xmlValue(content, 'tool-use-id'),
+    outputFile: xmlValue(content, 'output-file'),
+    status: xmlValue(content, 'status') || 'unknown',
+    totalTokens: tokens,
+    totalToolUseCount: asNumber(xmlValue(content, 'tool_uses'), 0),
+    totalDurationMs: asNumber(xmlValue(content, 'duration_ms'), 0)
+  };
+}
+
+function notificationMatchesRun(notification, run) {
+  if (!notification || !run) return false;
+  return (
+    (notification.taskId && run.agentId === notification.taskId) ||
+    (notification.toolUseId && run.toolUseId === notification.toolUseId) ||
+    (notification.outputFile && run.outputFile === notification.outputFile)
+  );
+}
+
+async function transcriptCandidates(state, env = process.env) {
+  const candidates = [];
+  addUniquePath(candidates, state.transcriptPath);
+
+  try {
+    const projectsDir = path.join(getHomeDir(env), '.claude', 'projects');
+    const projectDirs = await readdir(projectsDir, { withFileTypes: true });
+    for (const entry of projectDirs) {
+      if (!entry.isDirectory()) continue;
+      addUniquePath(candidates, path.join(projectsDir, entry.name, `${sanitizeId(state.sessionId)}.jsonl`));
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  return candidates;
+}
+
+function recomputeSubagentUsage(state) {
+  const verifiedRuns = state.subagents.runs.filter((run) => run.verified);
+  state.subagents.completed = verifiedRuns.length;
+  state.subagents.verifiedTokens = verifiedRuns.reduce(
+    (total, run) => total + asNumber(run.totalTokens, 0),
+    0
+  );
+  state.subagents.totalDurationMs = verifiedRuns.reduce(
+    (total, run) => total + asNumber(run.totalDurationMs, 0),
+    0
+  );
+  state.subagents.totalToolUseCount = verifiedRuns.reduce(
+    (total, run) => total + asNumber(run.totalToolUseCount, 0),
+    0
+  );
+}
+
+async function hydrateAsyncRunsFromTranscript(state, env = process.env) {
+  const pendingRuns = state.subagents.runs.filter(
+    (run) => !run.verified && run.status === 'async_launched'
+  );
+  if (pendingRuns.length === 0) return state;
+
+  const candidates = await transcriptCandidates(state, env);
+  for (const transcriptPath of candidates) {
+    if (!(await pathExists(transcriptPath))) continue;
+    const fileStat = await stat(transcriptPath);
+    if (fileStat.size > 20 * 1024 * 1024) continue;
+
+    const lines = (await readFile(transcriptPath, 'utf8')).split(/\r?\n/).filter(Boolean);
+    for (const line of lines) {
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const content =
+        entry.type === 'queue-operation'
+          ? entry.content
+          : typeof entry.message?.content === 'string'
+            ? entry.message.content
+            : null;
+      const notification = parseTaskNotification(content);
+      if (!notification || notification.status !== 'completed' || notification.totalTokens <= 0) {
+        continue;
+      }
+
+      const run = pendingRuns.find((item) => notificationMatchesRun(notification, item));
+      if (!run) continue;
+      run.status = notification.status;
+      run.totalTokens = notification.totalTokens;
+      run.totalDurationMs = notification.totalDurationMs;
+      run.totalToolUseCount = notification.totalToolUseCount;
+      run.verified = true;
+      run.usage = {
+        subagent_tokens: notification.totalTokens,
+        tool_uses: notification.totalToolUseCount,
+        duration_ms: notification.totalDurationMs
+      };
+    }
+  }
+
+  recomputeSubagentUsage(state);
+  return state;
+}
+
 async function listSessionIdsFromDataDir(dataDir) {
   try {
     const sessionsPath = stateDirForDataDir(dataDir);
@@ -1356,6 +1483,7 @@ export async function buildReport(sessionId, env = process.env) {
   const resolvedSessionId = sessionId || sessions[0]?.sessionId || 'unknown-session';
   const sessionFound = sessions.some((item) => item.sessionId === resolvedSessionId);
   const state = await readState(resolvedSessionId, reportEnv);
+  await hydrateAsyncRunsFromTranscript(state, reportEnv);
   const config = loadConfig(env);
   const fiveHour = state.rateLimits.fiveHour;
   const consumed =

@@ -61,7 +61,10 @@ function execNodeWithInput(args, input, options = {}) {
 
 async function withTempEnv(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sbg-test-'));
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const env = {
+    USERPROFILE: homeDir,
+    HOME: homeDir,
     CLAUDE_PLUGIN_DATA: dir,
     CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard')
   };
@@ -70,6 +73,7 @@ async function withTempEnv(fn) {
     return await fn(env, dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
   }
 }
 
@@ -146,7 +150,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.16';
+  const expectedVersion = '0.5.17';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1409,6 +1413,74 @@ test('buildReport discovers saved sessions from configured statusLine data path'
     assert.equal(report.sessionId, 'session-statusline-data-view');
     assert.equal(report.dataDir, path.resolve(dataDir));
     assert.equal(report.state.subagents.verifiedTokens, 654);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('buildReport hydrates async subagent usage from Claude transcript notifications', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  const transcriptPath = path.join(homeDir, '.claude', 'projects', 'repo-a', 'session-async-view.jsonl');
+  try {
+    await mkdir(path.dirname(transcriptPath), { recursive: true });
+    await handlePostToolUseAgent(
+      {
+        session_id: 'session-async-view',
+        transcript_path: transcriptPath,
+        cwd: '/workspace/repo-a',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_use_id: 'toolu_async_123',
+        tool_input: { description: 'Async task', subagent_type: 'general-purpose' },
+        tool_response: {
+          status: 'async_launched',
+          agentId: 'agent-async-123',
+          resolvedModel: 'claude-haiku',
+          outputFile: '/tmp/agent-async-123.output'
+        }
+      },
+      {
+        USERPROFILE: homeDir,
+        HOME: homeDir,
+        CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+        CLAUDE_PLUGIN_DATA: dataDir
+      }
+    );
+
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: 'queue-operation',
+        operation: 'enqueue',
+        sessionId: 'session-async-view',
+        content:
+          '<task-notification>\n' +
+          '<task-id>agent-async-123</task-id>\n' +
+          '<tool-use-id>toolu_async_123</tool-use-id>\n' +
+          '<output-file>/tmp/agent-async-123.output</output-file>\n' +
+          '<status>completed</status>\n' +
+          '<usage><subagent_tokens>18044</subagent_tokens><tool_uses>0</tool_uses><duration_ms>4930</duration_ms></usage>\n' +
+          '</task-notification>'
+      })}\n`,
+      'utf8'
+    );
+
+    const report = await buildReport('session-async-view', {
+      USERPROFILE: homeDir,
+      HOME: homeDir,
+      CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+      CLAUDE_PLUGIN_DATA: dataDir
+    });
+    const output = formatSubagentView(report);
+
+    assert.equal(report.state.subagents.runs[0].status, 'completed');
+    assert.equal(report.state.subagents.runs[0].verified, true);
+    assert.equal(report.state.subagents.verifiedTokens, 18044);
+    assert.equal(report.state.subagents.totalDurationMs, 4930);
+    assert.match(output, /Verified tokens: 18,044/);
+    assert.match(output, /duration: 4\.9s/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });
