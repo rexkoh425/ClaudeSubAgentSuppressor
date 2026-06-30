@@ -142,6 +142,14 @@ test('hooks match both Agent and Task subagent tool events', async () => {
   ]);
   assert.deepEqual(preToolMatchers, ['Agent', 'Task']);
   assert.deepEqual(postToolMatchers, ['Agent', 'Task']);
+
+  for (const entries of Object.values(hooks)) {
+    for (const entry of entries) {
+      for (const hook of entry.hooks) {
+        assert.equal('statusMessage' in hook, false);
+      }
+    }
+  }
 });
 
 test('marketplace exposes the subagent-cap install name', async () => {
@@ -155,8 +163,8 @@ test('marketplace exposes the subagent-cap install name', async () => {
   assert.equal(entry.source.package, '@rex_koh/subagent-budget-guard');
 });
 
-test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.19';
+test('release metadata is bumped consistently', async () => {
+  const expectedVersion = '0.5.20';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1819,8 +1827,8 @@ test('installStatusLineBridge keeps statusLine command stable across plugin upda
   await withTempEnv(async (_env, dataDir) => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
     try {
-      const firstRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '0.5.18');
-      const secondRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '0.5.19');
+      const firstRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '1.0.0');
+      const secondRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '1.0.1');
 
       await installStatusLineBridge({
         homeDir,
@@ -1832,7 +1840,7 @@ test('installStatusLineBridge keeps statusLine command stable across plugin upda
       const firstSettings = JSON.parse(await readFile(settingsPath, 'utf8'));
       const firstCommand = firstSettings.statusLine.command;
       assert.match(firstCommand, /statusline-runner\.js/);
-      assert.doesNotMatch(firstCommand, /0\.5\.18/);
+      assert.doesNotMatch(firstCommand, /1\.0\.0/);
 
       const result = await installStatusLineBridge({
         homeDir,
@@ -1860,8 +1868,8 @@ test('statusLine runner uses latest installed cache version without rerunning se
   try {
     const dataDir = path.join(homeDir, '.claude', 'plugins', 'data', 'subagent-cap');
     const cacheRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap');
-    const firstRoot = path.join(cacheRoot, '0.5.18');
-    const secondRoot = path.join(cacheRoot, '0.5.19');
+    const firstRoot = path.join(cacheRoot, '1.0.0');
+    const secondRoot = path.join(cacheRoot, '1.0.1');
 
     await mkdir(path.join(firstRoot, 'bin'), { recursive: true });
     await mkdir(path.join(secondRoot, 'bin'), { recursive: true });

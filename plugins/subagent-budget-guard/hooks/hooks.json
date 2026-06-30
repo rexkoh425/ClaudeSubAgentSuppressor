@@ -11,8 +11,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "pretool-agent"
             ],
-            "timeout": 10,
-            "statusMessage": "Checking subagent budget"
+            "timeout": 10
           }
         ]
       },
@@ -26,8 +25,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "pretool-agent"
             ],
-            "timeout": 10,
-            "statusMessage": "Checking subagent budget"
+            "timeout": 10
           }
         ]
       }
@@ -43,8 +41,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "posttool-agent"
             ],
-            "timeout": 10,
-            "statusMessage": "Recording subagent usage"
+            "timeout": 10
           }
         ]
       },
@@ -58,8 +55,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "posttool-agent"
             ],
-            "timeout": 10,
-            "statusMessage": "Recording subagent usage"
+            "timeout": 10
           }
         ]
       }
@@ -74,8 +70,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "posttool-batch"
             ],
-            "timeout": 10,
-            "statusMessage": "Checking queued subagents"
+            "timeout": 10
           }
         ]
       }
@@ -91,8 +86,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "subagent-start"
             ],
-            "timeout": 10,
-            "statusMessage": "Recording subagent start"
+            "timeout": 10
           }
         ]
       }
@@ -108,8 +102,7 @@
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "subagent-stop"
             ],
-            "timeout": 10,
-            "statusMessage": "Recording subagent stop"
+            "timeout": 10
           }
         ]
       }
