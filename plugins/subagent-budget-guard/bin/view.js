@@ -15,6 +15,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`sub-agent-view failed: ${error.stack || error.message}\n`);
+  process.stderr.write(`sub-agent-view failed: ${error.message || String(error)}\n`);
   process.exitCode = 1;
 });

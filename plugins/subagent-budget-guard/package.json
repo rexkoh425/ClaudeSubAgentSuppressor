@@ -1,6 +1,6 @@
 {
   "name": "@rex_koh/subagent-budget-guard",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "description": "Claude Code plugin that limits subagent launches by default, records verified subagent usage, and optionally enforces 5-hour session budgets.",
   "license": "MIT",
   "author": "ClaudeSubAgentSuppressor",
