@@ -11,6 +11,10 @@ Keep the Claude-facing surface small. This plugin should expose only:
 
 Do not add more slash commands or suggest a separate slash command for each setting.
 
+Only offer settings that map to behavior the hooks can actually enforce, or to
+saved data the reporting command can verify. If Claude Code does not expose a
+mid-run signal, describe the feature as post-completion reporting or omit it.
+
 ## Guided Setup
 
 Ask the user to choose one setup path:

@@ -62,6 +62,16 @@ There is no separate slash command per setting. When you need to change one
 setting, run `/subagent-cap:init`, choose `Adjust Current`, and change only that
 field.
 
+## Feature Bar
+
+User-facing controls should stay useful and verifiable:
+
+- Add a setup option only when the hook can enforce it or the report can show it
+  from saved, verified data.
+- If Claude Code does not expose a mid-run signal, do not present the feature as
+  a mid-run limit.
+- Prefer one clear setup path over extra slash commands or overlapping aliases.
+
 ## Recommended Defaults
 
 `/subagent-cap:init` writes these recommended values into
@@ -86,8 +96,8 @@ the user chooses a working configuration.
 
 `/subagent-cap:init` asks for one of these paths:
 
-- Balanced: recommended, two subagents, 500,000 token limit, 80% warning.
-- Strict: one subagent, 250,000 token limit, 70% warning.
+- Balanced: recommended, two subagents, 500,000 session token cap, 80% warning.
+- Strict: one subagent, 250,000 session token cap, 70% warning.
 - Observe Only: record usage without blocking subagents.
 - Custom: start from Balanced and choose each value with plain-English labels.
 - Adjust Current: change selected settings while preserving everything else.

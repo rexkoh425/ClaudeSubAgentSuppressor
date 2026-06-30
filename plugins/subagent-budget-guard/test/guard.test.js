@@ -136,7 +136,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.13';
+  const expectedVersion = '0.5.14';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -175,6 +175,8 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
   assert.match(text, /Verified session token cap/);
   assert.match(text, /not an individual running subagent limit/i);
   assert.match(text, /Do not add more slash commands/i);
+  assert.match(text, /Only offer settings that map to behavior the hooks can actually enforce/i);
+  assert.match(text, /post-completion reporting or omit it/i);
 
   const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
   const command = await readFile(commandPath, 'utf8');
@@ -190,6 +192,27 @@ test('npm package ships Claude command files', async () => {
   );
 
   assert.ok(packageJson.files.includes('commands/'));
+});
+
+test('setup help and docs avoid unsupported individual token limit controls', async () => {
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+    '--help'
+  ]);
+  const rootReadme = await readFile(path.resolve('README.md'), 'utf8');
+  const packageReadme = await readFile(
+    path.resolve('plugins/subagent-budget-guard/README.md'),
+    'utf8'
+  );
+
+  assert.match(stdout, /session-token-cap/);
+  assert.doesNotMatch(stdout, /token-limit/);
+  assert.doesNotMatch(stdout, /subagent-tokens/);
+  assert.doesNotMatch(stdout, /verified-token-cap/);
+  assert.match(rootReadme, /User-facing controls should stay useful and verifiable/);
+  assert.match(packageReadme, /User-facing controls should stay useful and verifiable/);
+  assert.match(rootReadme, /do not present the feature as\s+a mid-run limit/i);
+  assert.match(packageReadme, /do not present the feature as\s+a mid-run limit/i);
 });
 
 test('hook CLI accepts BOM-prefixed JSON from stdin', async () => {
