@@ -164,7 +164,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.21';
+  const expectedVersion = '0.5.22';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -244,6 +244,10 @@ test('setup help and docs avoid unsupported individual token limit controls', as
   assert.doesNotMatch(stdout, /token-limit/);
   assert.doesNotMatch(stdout, /subagent-tokens/);
   assert.doesNotMatch(stdout, /verified-token-cap/);
+  assert.doesNotMatch(stdout, /--config/);
+  assert.doesNotMatch(stdout, /Internal config keys/);
+  assert.doesNotMatch(stdout, /max_concurrent_subagents/);
+  assert.doesNotMatch(stdout, /session_five_hour_budget_percent/);
   assert.match(rootReadme, /User-facing controls should stay useful and verifiable/);
   assert.match(packageReadme, /User-facing controls should stay useful and verifiable/);
   assert.match(rootReadme, /do not present the feature as\s+a mid-run limit/i);
@@ -256,6 +260,18 @@ test('setup help and docs avoid unsupported individual token limit controls', as
   assert.doesNotMatch(stdout, /session_budget/);
   assert.doesNotMatch(rootReadme, /session_budget/);
   assert.doesNotMatch(packageReadme, /session_budget/);
+});
+
+test('setup CLI keeps raw config help behind explicit internal help', async () => {
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+    '--help-internal'
+  ]);
+
+  assert.match(stdout, /--config key=value/);
+  assert.match(stdout, /Internal config keys/);
+  assert.match(stdout, /max_concurrent_subagents/);
+  assert.match(stdout, /session_five_hour_budget_percent/);
 });
 
 test('hook CLI accepts BOM-prefixed JSON from stdin', async () => {
