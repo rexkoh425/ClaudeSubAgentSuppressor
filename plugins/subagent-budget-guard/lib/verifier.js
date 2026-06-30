@@ -110,7 +110,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.18', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.19', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -300,7 +300,10 @@ export async function runOfflineVerification({
         pluginData: dataDir
       });
       const settings = JSON.parse(await readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
-      assert(settings.statusLine.command.includes('statusline.js'), 'bridge command missing');
+      assert(
+        settings.statusLine.command.includes('statusline-runner.js'),
+        'bridge runner command missing'
+      );
       assert(settings.statusLine.command.includes('--data'), 'bridge data arg missing');
       return setup.bridgePath;
     } finally {
@@ -443,7 +446,7 @@ export async function runLiveVerification({
     const settings = await readJson(settingsPath);
     assert(
       typeof settings.statusLine?.command === 'string' &&
-        settings.statusLine.command.includes('statusline.js') &&
+        settings.statusLine.command.includes('statusline-runner.js') &&
         settings.statusLine.command.includes('--data'),
       'statusLine bridge is not installed; run /subagent-cap:init'
     );
