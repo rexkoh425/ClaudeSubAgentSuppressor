@@ -1,25 +1,109 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 
 import {
   CONFIG_KEYS,
+  PLUGIN_ID,
   SETUP_CONFIG,
   buildSetupConfig,
   getDataDir,
   getHomeDir,
   getPluginRoot,
-  installStatusLineBridge
+  installStatusLineBridge,
+  loadConfig
 } from '../lib/guard.js';
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS);
+const SETTING_ALIASES = Object.freeze({
+  agents: 'max_concurrent_subagents',
+  subagents: 'max_concurrent_subagents',
+  'subagents-at-once': 'max_concurrent_subagents',
+  'agent-limit': 'max_concurrent_subagents',
+  'token-limit': 'max_subagent_tokens_per_session',
+  tokens: 'max_subagent_tokens_per_session',
+  'subagent-tokens': 'max_subagent_tokens_per_session',
+  'warn-at': 'subagent_token_warning_threshold_percent',
+  warning: 'subagent_token_warning_threshold_percent',
+  'warning-threshold': 'subagent_token_warning_threshold_percent',
+  'five-hour-budget': 'session_five_hour_budget_percent',
+  budget: 'session_five_hour_budget_percent',
+  'session-budget': 'session_five_hour_budget_percent',
+  'five-hour-ceiling': 'absolute_five_hour_ceiling_percent',
+  ceiling: 'absolute_five_hour_ceiling_percent',
+  mode: 'enforcement_mode',
+  'budget-mode': 'enforcement_mode',
+  'enforcement-mode': 'enforcement_mode',
+  enabled: 'enforcement_enabled',
+  enforcement: 'enforcement_enabled'
+});
+
+const PRESETS = Object.freeze({
+  balanced: {
+    label: 'Balanced',
+    config: SETUP_CONFIG
+  },
+  strict: {
+    label: 'Strict',
+    config: {
+      ...SETUP_CONFIG,
+      max_concurrent_subagents: 1,
+      max_subagent_tokens_per_session: 250000,
+      subagent_token_warning_threshold_percent: 70,
+      session_five_hour_budget_percent: 5,
+      absolute_five_hour_ceiling_percent: 85,
+      enforcement_mode: 'subagent_only',
+      enforcement_enabled: true
+    }
+  },
+  observe: {
+    label: 'Observe Only',
+    config: {
+      ...SETUP_CONFIG,
+      enforcement_mode: 'observe',
+      enforcement_enabled: true
+    }
+  }
+});
 
 function usage() {
   return [
-    'Usage: subagent-cap init [--defaults] [--interactive] [--config key=value ...]',
+    'Usage: subagent-cap init [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]',
     '',
-    'Config keys:',
+    'Friendly settings:',
+    '  agents              subagents at once',
+    '  token-limit         verified subagent token cap',
+    '  warn-at             warning threshold percent',
+    '  five-hour-budget    5-hour budget points for this session',
+    '  five-hour-ceiling   absolute 5-hour percentage ceiling',
+    '  mode                subagent_only, session_budget, or observe',
+    '  enabled             true or false',
+    '',
+    'Examples:',
+    '  subagent-cap init --preset balanced',
+    '  subagent-cap init --set agents=3 --set warn-at=75',
+    '  subagent-cap init --preset balanced --set token-limit=750000',
+    '',
+    'Internal config keys still work with --config:',
     ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
   ].join('\n');
+}
+
+function normalizeSettingName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-');
+}
+
+function configKeyForSetting(name) {
+  if (CONFIG_KEY_SET.has(name)) return name;
+  const alias = SETTING_ALIASES[normalizeSettingName(name)];
+  if (alias) return alias;
+  throw new Error(
+    `Unknown setting "${name}". Valid settings: ${Object.keys(SETTING_ALIASES).join(', ')}`
+  );
 }
 
 function parseConfigPair(pair) {
@@ -36,11 +120,22 @@ function parseConfigPair(pair) {
   return [key, value];
 }
 
+function parseSettingPair(pair) {
+  const index = pair.indexOf('=');
+  if (index <= 0) {
+    throw new Error(`Invalid --set value "${pair}". Expected name=value.`);
+  }
+
+  return [configKeyForSetting(pair.slice(0, index)), pair.slice(index + 1)];
+}
+
 function parseArgs(args) {
   const options = {
     interactive: false,
     defaults: false,
-    overrides: {}
+    preset: null,
+    configOverrides: {},
+    setOverrides: {}
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -57,23 +152,101 @@ function parseArgs(args) {
       options.defaults = true;
       continue;
     }
+    if (arg === '--preset') {
+      const preset = args[index + 1];
+      if (!preset) throw new Error('--preset requires balanced, strict, or observe');
+      options.preset = normalizeSettingName(preset);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--preset=')) {
+      options.preset = normalizeSettingName(arg.slice('--preset='.length));
+      continue;
+    }
+    if (arg === '--set') {
+      const pair = args[index + 1];
+      if (!pair) throw new Error('--set requires name=value');
+      const [key, value] = parseSettingPair(pair);
+      options.setOverrides[key] = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--set=')) {
+      const [key, value] = parseSettingPair(arg.slice('--set='.length));
+      options.setOverrides[key] = value;
+      continue;
+    }
+    if (arg.startsWith('--') && Object.hasOwn(SETTING_ALIASES, normalizeSettingName(arg.slice(2)))) {
+      const key = configKeyForSetting(arg.slice(2));
+      const value = args[index + 1];
+      if (!value) throw new Error(`${arg} requires a value`);
+      options.setOverrides[key] = value;
+      index += 1;
+      continue;
+    }
     if (arg === '--config') {
       const pair = args[index + 1];
       if (!pair) throw new Error('--config requires key=value');
       const [key, value] = parseConfigPair(pair);
-      options.overrides[key] = value;
+      options.configOverrides[key] = value;
       index += 1;
       continue;
     }
     if (arg.startsWith('--config=')) {
       const [key, value] = parseConfigPair(arg.slice('--config='.length));
-      options.overrides[key] = value;
+      options.configOverrides[key] = value;
       continue;
     }
     throw new Error(`Unknown argument "${arg}".\n${usage()}`);
   }
 
   return options;
+}
+
+function hasExistingPluginConfig(homeDir) {
+  try {
+    const settingsPath = `${homeDir}/.claude/settings.json`;
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8').replace(/^\uFEFF/, ''));
+    return Boolean(settings?.pluginConfigs?.[PLUGIN_ID]?.options);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
+function presetForName(name) {
+  const presetName = name || 'balanced';
+  const preset = PRESETS[presetName];
+  if (!preset) {
+    throw new Error(`Unknown preset "${name}". Valid presets: ${Object.keys(PRESETS).join(', ')}`);
+  }
+  return preset;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString('en-US');
+}
+
+function modeLabel(mode) {
+  if (mode === 'subagent_only') return 'Only limit subagents';
+  if (mode === 'session_budget') return 'Strict session budget';
+  if (mode === 'observe') return 'Observe only';
+  return mode;
+}
+
+function friendlyConfigLines(config, presetLabel) {
+  return [
+    `Preset: ${presetLabel}`,
+    'Settings applied:',
+    `  Subagents at once: ${formatNumber(config.max_concurrent_subagents)}`,
+    `  Token limit: ${formatNumber(config.max_subagent_tokens_per_session)}`,
+    `  Warning at: ${formatNumber(config.subagent_token_warning_threshold_percent)}%`,
+    `  5-hour budget: ${formatNumber(config.session_five_hour_budget_percent)} percentage points`,
+    `  5-hour ceiling: ${formatNumber(config.absolute_five_hour_ceiling_percent)}%`,
+    `  Mode: ${modeLabel(config.enforcement_mode)}`,
+    `  Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'}`
+  ];
 }
 
 async function promptForConfig(defaults, { askMode = true } = {}) {
@@ -85,14 +258,30 @@ async function promptForConfig(defaults, { askMode = true } = {}) {
 
   try {
     if (askMode) {
-      const useDefaults = await rl.question('Use recommended defaults? [Y/n]: ');
-      if (!useDefaults.trim() || /^y(es)?$/i.test(useDefaults.trim())) {
-        return buildSetupConfig(defaults);
+      const presetAnswer = await rl.question(
+        'Choose setup: Balanced, Strict, Observe Only, or Custom [Balanced]: '
+      );
+      const normalized = normalizeSettingName(presetAnswer || 'balanced').replace(/-only$/, '');
+      if (['balanced', 'strict', 'observe'].includes(normalized)) {
+        return {
+          config: buildSetupConfig({ ...presetForName(normalized).config, ...defaults }),
+          label: presetForName(normalized).label
+        };
       }
     }
 
-    for (const key of CONFIG_KEYS) {
-      const answer = await rl.question(`${key} [${defaults[key]}]: `);
+    const prompts = [
+      ['agents', 'Subagents at once'],
+      ['token-limit', 'Token limit'],
+      ['warn-at', 'Warning threshold percent'],
+      ['five-hour-budget', '5-hour budget percentage points'],
+      ['five-hour-ceiling', '5-hour ceiling percent'],
+      ['mode', 'Budget mode'],
+      ['enabled', 'Enforcement enabled']
+    ];
+    for (const [name, label] of prompts) {
+      const key = configKeyForSetting(name);
+      const answer = await rl.question(`${label} [${defaults[key]}]: `);
       if (answer.trim()) {
         answers[key] = answer.trim();
       }
@@ -101,35 +290,69 @@ async function promptForConfig(defaults, { askMode = true } = {}) {
     rl.close();
   }
 
-  return buildSetupConfig({ ...defaults, ...answers });
+  return {
+    config: buildSetupConfig({ ...defaults, ...answers }),
+    label: 'Custom'
+  };
+}
+
+function buildNonInteractiveSetup(options, env = process.env) {
+  let base;
+  let label;
+
+  if (options.preset) {
+    const preset = presetForName(options.preset);
+    base = preset.config;
+    label = preset.label;
+  } else if (options.defaults) {
+    base = PRESETS.balanced.config;
+    label = PRESETS.balanced.label;
+  } else if (Object.keys(options.configOverrides).length > 0) {
+    base = SETUP_CONFIG;
+    label = 'Custom';
+  } else if (Object.keys(options.setOverrides).length > 0) {
+    const homeDir = getHomeDir(env);
+    const hasExisting = hasExistingPluginConfig(homeDir);
+    base = hasExisting ? loadConfig(env) : SETUP_CONFIG;
+    label = hasExisting ? 'Current settings' : 'Balanced';
+  } else {
+    base = SETUP_CONFIG;
+    label = PRESETS.balanced.label;
+  }
+
+  return {
+    config: buildSetupConfig({
+      ...base,
+      ...options.configOverrides,
+      ...options.setOverrides
+    }),
+    label
+  };
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const defaults = buildSetupConfig(options.overrides);
-  const setupConfig = options.interactive
-    ? await promptForConfig(defaults, { askMode: false })
-    : !options.defaults && Object.keys(options.overrides).length === 0 && process.stdin.isTTY
-      ? await promptForConfig(defaults)
-      : defaults;
+  const nonInteractive = buildNonInteractiveSetup(options);
+  const setup = options.interactive
+    ? await promptForConfig(nonInteractive.config, { askMode: false })
+    : !options.defaults &&
+        !options.preset &&
+        Object.keys(options.configOverrides).length === 0 &&
+        Object.keys(options.setOverrides).length === 0 &&
+        process.stdin.isTTY
+      ? await promptForConfig(nonInteractive.config)
+      : nonInteractive;
   const result = await installStatusLineBridge({
     homeDir: getHomeDir(process.env),
     pluginRoot: getPluginRoot(process.env),
     pluginData: getDataDir(process.env),
-    setupConfig
+    setupConfig: setup.config
   });
 
   process.stdout.write(
     [
       'Subagent Cap statusLine bridge installed.',
-      'Plugin config applied:',
-      `  max_concurrent_subagents=${result.pluginConfigOptions.max_concurrent_subagents}`,
-      `  max_subagent_tokens_per_session=${result.pluginConfigOptions.max_subagent_tokens_per_session}`,
-      `  subagent_token_warning_threshold_percent=${result.pluginConfigOptions.subagent_token_warning_threshold_percent}`,
-      `  session_five_hour_budget_percent=${result.pluginConfigOptions.session_five_hour_budget_percent}`,
-      `  absolute_five_hour_ceiling_percent=${result.pluginConfigOptions.absolute_five_hour_ceiling_percent}`,
-      `  enforcement_mode=${result.pluginConfigOptions.enforcement_mode}`,
-      `  enforcement_enabled=${result.pluginConfigOptions.enforcement_enabled}`,
+      ...friendlyConfigLines(result.pluginConfigOptions, setup.label),
       `Settings: ${result.settingsPath}`,
       `Bridge state: ${result.bridgePath}`,
       result.previousStatusLine

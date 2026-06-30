@@ -32,8 +32,9 @@ function usage() {
     ...Object.entries(COMMANDS).map(([name, info]) => `  ${name.padEnd(8)} ${info.help}`),
     '',
     'Examples:',
-    '  subagent-cap init',
-    '  subagent-cap init --defaults',
+    '  subagent-cap init --preset balanced',
+    '  subagent-cap init --preset strict',
+    '  subagent-cap init --set agents=3 --set warn-at=75',
     '  subagent-cap status',
     '  subagent-cap view',
     '  subagent-cap doctor --offline'

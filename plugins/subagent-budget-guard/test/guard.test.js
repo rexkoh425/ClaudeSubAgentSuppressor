@@ -136,7 +136,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.11';
+  const expectedVersion = '0.5.12';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -169,6 +169,10 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
 
   const text = await readFile(path.join(skillsDir, 'init', 'SKILL.md'), 'utf8');
   assert.match(text, /# Init Subagent Cap/i);
+  assert.match(text, /Balanced/);
+  assert.match(text, /Strict/);
+  assert.match(text, /Observe Only/);
+  assert.match(text, /Do not add more slash commands/i);
 
   const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
   const command = await readFile(commandPath, 'utf8');
@@ -1835,6 +1839,153 @@ test('setup CLI applies custom config values over recommended defaults', async (
     assert.equal(options.absolute_five_hour_ceiling_percent, 90);
     assert.equal(options.enforcement_mode, 'session_budget');
     assert.equal(options.enforcement_enabled, false);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('setup CLI applies friendly preset choices', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+        '--preset',
+        'strict'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    const options =
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options;
+
+    assert.equal(options.max_concurrent_subagents, 1);
+    assert.equal(options.max_subagent_tokens_per_session, 250000);
+    assert.equal(options.subagent_token_warning_threshold_percent, 70);
+    assert.equal(options.session_five_hour_budget_percent, 5);
+    assert.equal(options.absolute_five_hour_ceiling_percent, 85);
+    assert.equal(options.enforcement_mode, 'subagent_only');
+    assert.equal(options.enforcement_enabled, true);
+    assert.match(stdout, /Preset: Strict/);
+    assert.match(stdout, /Subagents at once: 1/);
+    assert.match(stdout, /Token limit: 250,000/);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('setup CLI friendly set aliases preserve existing settings', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    const claudeDir = path.join(homeDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      path.join(claudeDir, 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: {
+          'subagent-cap@subagent-tools': {
+            options: {
+              max_concurrent_subagents: 2,
+              max_subagent_tokens_per_session: 750000,
+              subagent_token_warning_threshold_percent: 80,
+              session_five_hour_budget_percent: 10,
+              absolute_five_hour_ceiling_percent: 90,
+              enforcement_mode: 'subagent_only',
+              enforcement_enabled: true
+            }
+          }
+        }
+      })
+    );
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+        '--set',
+        'agents=3',
+        '--set',
+        'warn-at=75',
+        '--set',
+        'mode=observe'
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          USERPROFILE: homeDir,
+          HOME: homeDir,
+          CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+          CLAUDE_PLUGIN_DATA: dataDir
+        }
+      }
+    );
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    const options =
+      settings.pluginConfigs['subagent-cap@subagent-tools'].options;
+
+    assert.equal(options.max_concurrent_subagents, 3);
+    assert.equal(options.max_subagent_tokens_per_session, 750000);
+    assert.equal(options.subagent_token_warning_threshold_percent, 75);
+    assert.equal(options.session_five_hour_budget_percent, 10);
+    assert.equal(options.absolute_five_hour_ceiling_percent, 90);
+    assert.equal(options.enforcement_mode, 'observe');
+    assert.equal(options.enforcement_enabled, true);
+    assert.match(stdout, /Preset: Current settings/);
+    assert.match(stdout, /Subagents at once: 3/);
+    assert.match(stdout, /Warning at: 75%/);
+    assert.doesNotMatch(stdout, /max_concurrent_subagents=/);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('setup CLI rejects unknown friendly setting names', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+          '--set',
+          'subagent-speed=fast'
+        ],
+        {
+          cwd: path.resolve('.'),
+          env: {
+            ...process.env,
+            USERPROFILE: homeDir,
+            HOME: homeDir,
+            CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+            CLAUDE_PLUGIN_DATA: dataDir
+          }
+        }
+      ),
+      /Unknown setting "subagent-speed"/
+    );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });

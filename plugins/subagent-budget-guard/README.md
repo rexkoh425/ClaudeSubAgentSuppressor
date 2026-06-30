@@ -36,6 +36,17 @@ claude plugin update subagent-cap@subagent-tools
 
 Then restart Claude Code.
 
+## Slash Commands
+
+The plugin intentionally keeps the Claude Code surface to two slash entries:
+
+- `/subagent-cap:init` configures setup, presets, and individual setting changes.
+- `/sub-agent-view` shows saved subagent usage after or during a session.
+
+There is no separate slash command per setting. When you need to change one
+setting, run `/subagent-cap:init`, choose `Adjust Current`, and change only that
+field.
+
 ## NPM Helper CLI
 
 Claude Code plugin discovery is marketplace-based. The npm package is also
@@ -67,6 +78,29 @@ enforcement_enabled=true
 Before init, the plugin is fail-closed for subagents:
 `max_concurrent_subagents=0`. That prevents surprise subagent launches before
 the user chooses a working configuration.
+
+## Guided Setup Choices
+
+`/subagent-cap:init` asks for one of these paths:
+
+- Balanced: recommended, two subagents, 500,000 token limit, 80% warning.
+- Strict: one subagent, 250,000 token limit, 70% warning.
+- Observe Only: record usage without blocking subagents.
+- Custom: start from Balanced and choose each value with plain-English labels.
+- Adjust Current: change selected settings while preserving everything else.
+
+The setup command uses friendly setting names:
+
+```bash
+subagent-cap init --preset balanced
+subagent-cap init --preset strict
+subagent-cap init --preset observe
+subagent-cap init --set agents=3 --set warn-at=75
+subagent-cap init --preset balanced --set token-limit=750000
+```
+
+Friendly names map to the stable internal config keys, so existing installs and
+saved settings remain compatible.
 
 ## Configuration
 
@@ -229,13 +263,13 @@ subagents.
 If you want the plugin to stop blocking entirely but keep reports:
 
 ```bash
-subagent-cap init --config enforcement_mode=observe
+subagent-cap init --set mode=observe
 ```
 
 If you want broad session-budget blocking, opt in explicitly:
 
 ```bash
-subagent-cap init --config enforcement_mode=session_budget
+subagent-cap init --set mode=session_budget
 ```
 
 Restart Claude Code after changing plugin config.
