@@ -122,6 +122,8 @@ cannot stop a subagent mid-run.
 
 Tell the user to fully exit and reopen Claude Code so the updated hooks and
 statusLine bridge load for future messages.
+Do not try to restart Claude Code automatically; restarting can interrupt the
+active conversation and discard context.
 
 For optional terminal verification, run:
 

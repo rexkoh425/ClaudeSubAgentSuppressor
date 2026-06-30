@@ -136,7 +136,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.14';
+  const expectedVersion = '0.5.15';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1909,6 +1909,8 @@ test('setup CLI applies friendly preset choices', async () => {
     assert.match(stdout, /Preset: Strict/);
     assert.match(stdout, /Subagents at once: 1/);
     assert.match(stdout, /Verified session token cap: 250,000/);
+    assert.match(stdout, /RESTART REQUIRED: fully exit and reopen Claude Code/i);
+    assert.match(stdout, /Then send one normal message before relying on \/sub-agent-view/i);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });

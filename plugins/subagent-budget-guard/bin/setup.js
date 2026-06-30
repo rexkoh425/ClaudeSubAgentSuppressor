@@ -354,6 +354,8 @@ async function main() {
       ...friendlyConfigLines(result.pluginConfigOptions, setup.label),
       `Settings: ${result.settingsPath}`,
       `Bridge state: ${result.bridgePath}`,
+      'RESTART REQUIRED: fully exit and reopen Claude Code so hooks and statusLine reload.',
+      'Then send one normal message before relying on /sub-agent-view for current-session telemetry.',
       result.previousStatusLine
         ? 'Existing statusLine command preserved and wrapped.'
         : 'No previous statusLine command was configured.'

@@ -20,6 +20,8 @@ Inside Claude Code:
 
 After init, fully exit and reopen Claude Code. The restart lets Claude Code load
 the updated hooks and statusLine bridge from `settings.json`.
+The plugin does not automatically restart Claude Code because that would
+interrupt the active conversation and could discard unsaved context.
 
 Then send one normal message in the new session so the statusLine bridge can see
 fresh session JSON. After that, use:
