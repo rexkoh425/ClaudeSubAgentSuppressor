@@ -203,8 +203,17 @@ The first observed percentage becomes the session baseline. Later values are
 compared against that baseline. In default `subagent_only` mode, this budget can
 deny new subagent launches but does not suppress normal prompts.
 
-If an existing statusLine command is present, setup stores it in the plugin data
-directory and calls it through the bridge instead of deleting it.
+Setup points Claude Code at a stable runner in the plugin data directory:
+
+```text
+CLAUDE_PLUGIN_DATA/statusline-runner.js
+```
+
+That runner calls the latest installed Subagent Cap `statusline.js` from Claude's
+plugin cache, so a normal plugin update no longer leaves `settings.json` pinned
+to an older versioned cache path. If an existing statusLine command is present,
+setup stores it in the plugin data directory and calls it through the bridge
+instead of deleting it.
 
 ## Viewing Subagent Usage
 

@@ -1562,9 +1562,159 @@ function quoteShellArg(value) {
   return `"${normalized}"`;
 }
 
+function statusLineRunnerPath(pluginData) {
+  return path.join(pluginData, 'statusline-runner.js');
+}
+
 function bridgeCommand(pluginRoot, pluginData) {
-  const statuslinePath = path.join(pluginRoot, 'bin', 'statusline.js');
-  return `node ${quoteShellArg(statuslinePath)} --data ${quoteShellArg(pluginData)}`;
+  return `node ${quoteShellArg(statusLineRunnerPath(pluginData))} --data ${quoteShellArg(pluginData)}`;
+}
+
+function statusLineRunnerSource() {
+  return `#!/usr/bin/env node
+const { spawn } = require('node:child_process');
+const { existsSync, readFileSync, readdirSync, statSync } = require('node:fs');
+const path = require('node:path');
+
+function argValue(name) {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return null;
+  return process.argv[index + 1] || null;
+}
+
+function readJson(filePath, fallback = {}) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8').replace(/^\\uFEFF/, ''));
+  } catch {
+    return fallback;
+  }
+}
+
+function parseVersion(value) {
+  return String(value)
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+}
+
+function compareVersionsDescending(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (b[index] || 0) - (a[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return String(right).localeCompare(String(left));
+}
+
+function addUnique(list, value) {
+  if (!value) return;
+  const normalized = path.resolve(String(value));
+  if (!list.includes(normalized)) list.push(normalized);
+}
+
+function isPluginCacheRoot(root) {
+  const normalized = String(root || '').replace(/\\\\/g, '/');
+  return normalized.includes('/plugins/cache/subagent-tools/subagent-cap/');
+}
+
+function latestCacheRoot(dataDir) {
+  const cacheRoot = path.resolve(dataDir, '..', '..', 'cache', 'subagent-tools', 'subagent-cap');
+  try {
+    const versions = readdirSync(cacheRoot)
+      .filter((name) => {
+        try {
+          return statSync(path.join(cacheRoot, name)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort(compareVersionsDescending);
+    for (const version of versions) {
+      const root = path.join(cacheRoot, version);
+      if (existsSync(path.join(root, 'bin', 'statusline.js'))) return root;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function candidateRoots(dataDir, bridge) {
+  const roots = [];
+  if (bridge.pluginRoot && !isPluginCacheRoot(bridge.pluginRoot)) {
+    addUnique(roots, bridge.pluginRoot);
+  }
+  addUnique(roots, process.env.CLAUDE_PLUGIN_ROOT);
+  addUnique(roots, latestCacheRoot(dataDir));
+  addUnique(roots, bridge.pluginRoot);
+  return roots;
+}
+
+function statuslineScript(dataDir) {
+  const bridge = readJson(path.join(dataDir, 'statusline-bridge.json'), {});
+  for (const root of candidateRoots(dataDir, bridge)) {
+    const script = path.join(root, 'bin', 'statusline.js');
+    if (existsSync(script)) return { script, root };
+  }
+  return null;
+}
+
+function run(input) {
+  const dataDir = path.resolve(argValue('--data') || process.env.CLAUDE_PLUGIN_DATA || __dirname);
+  const target = statuslineScript(dataDir);
+  if (!target) {
+    process.stdout.write('SBG setup needed: run /subagent-cap:init\\n');
+    return;
+  }
+
+  const child = spawn(process.execPath, [target.script, '--data', dataDir], {
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: dataDir,
+      CLAUDE_PLUGIN_ROOT: target.root
+    },
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'ignore']
+  });
+
+  let stdout = '';
+  let settled = false;
+  const finish = (output) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    process.stdout.write(output || stdout || '');
+  };
+  const timer = setTimeout(() => {
+    child.kill();
+    finish('SBG statusline timeout: run /subagent-cap:init\\n');
+  }, 4500);
+
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+    if (stdout.length > 1024 * 1024) child.kill();
+  });
+  child.on('error', () => finish('SBG statusline unavailable: run /subagent-cap:init\\n'));
+  child.on('close', () => finish(stdout));
+  child.stdin.end(input);
+}
+
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+});
+process.stdin.on('end', () => run(input));
+process.stdin.resume();
+`;
+}
+
+async function writeStatusLineRunner(pluginData) {
+  const runnerPath = statusLineRunnerPath(pluginData);
+  await writeFile(runnerPath, statusLineRunnerSource(), 'utf8');
+  return runnerPath;
 }
 
 async function ensureSettings(homeDir) {
@@ -1576,11 +1726,12 @@ async function ensureSettings(homeDir) {
 }
 
 function isBridgeStatusLine(statusLine) {
+  const command = statusLine?.command;
   return (
-    statusLine &&
-    typeof statusLine.command === 'string' &&
-    statusLine.command.includes('statusline.js') &&
-    statusLine.command.includes('--data')
+    typeof command === 'string' &&
+    command.includes('--data') &&
+    (command.includes('statusline-runner.js') ||
+      (command.includes('statusline.js') && command.includes('subagent-cap')))
   );
 }
 
@@ -1631,9 +1782,11 @@ export async function installStatusLineBridge({
   const bridgePath = path.join(pluginData, 'statusline-bridge.json');
   const previousBridge = await readJson(bridgePath, {});
   const existing = settings.statusLine || null;
-  const previousStatusLine = isBridgeStatusLine(existing)
+  const existingIsBridge = isBridgeStatusLine(existing);
+  const previousStatusLine = existingIsBridge
     ? previousBridge.previousStatusLine || null
     : existing;
+  const runnerPath = await writeStatusLineRunner(pluginData);
 
   const command = bridgeCommand(pluginRoot, pluginData);
   const nextStatusLine = {
@@ -1658,8 +1811,14 @@ export async function installStatusLineBridge({
     installed: true,
     settingsPath,
     bridgePath,
+    runnerPath,
     command,
     previousStatusLine,
+    bridgeRefreshed: Boolean(
+      existingIsBridge &&
+        previousBridge.pluginRoot &&
+        path.resolve(previousBridge.pluginRoot) !== path.resolve(pluginRoot)
+    ),
     pluginConfigApplied: true,
     pluginConfigOptions
   };

@@ -150,8 +150,10 @@ shows effort or thinking only if Claude Code exposes it in hook/statusLine data.
 ## After Setup
 
 Tell the user to fully exit and reopen Claude Code after first setup or after a
-plugin update so updated hooks and the statusLine bridge load for future
-messages.
+plugin update so updated plugin hooks load for future messages. The statusLine
+runner is installed at a stable plugin-data path, so normal plugin updates should
+not leave Claude settings pinned to an old versioned cache path after setup has
+been run once on this version.
 Do not try to restart Claude Code automatically; restarting can interrupt the
 active conversation and discard context.
 After restart, tell them to send one normal message and then use `/sub-agent-view`.

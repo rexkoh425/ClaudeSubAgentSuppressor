@@ -156,7 +156,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.18';
+  const expectedVersion = '0.5.19';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -1801,7 +1801,7 @@ test('installStatusLineBridge preserves an existing statusLine command', async (
 
       assert.equal(result.installed, true);
       const settings = JSON.parse(await readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
-      assert.match(settings.statusLine.command, /statusline\.js/);
+      assert.match(settings.statusLine.command, /statusline-runner\.js/);
       assert.match(settings.statusLine.command, /--data/);
 
       const bridge = JSON.parse(
@@ -1813,6 +1813,83 @@ test('installStatusLineBridge preserves an existing statusLine command', async (
       await rm(homeDir, { recursive: true, force: true });
     }
   });
+});
+
+test('installStatusLineBridge keeps statusLine command stable across plugin updates', async () => {
+  await withTempEnv(async (_env, dataDir) => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+    try {
+      const firstRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '0.5.18');
+      const secondRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap', '0.5.19');
+
+      await installStatusLineBridge({
+        homeDir,
+        pluginRoot: firstRoot,
+        pluginData: dataDir
+      });
+
+      const settingsPath = path.join(homeDir, '.claude', 'settings.json');
+      const firstSettings = JSON.parse(await readFile(settingsPath, 'utf8'));
+      const firstCommand = firstSettings.statusLine.command;
+      assert.match(firstCommand, /statusline-runner\.js/);
+      assert.doesNotMatch(firstCommand, /0\.5\.18/);
+
+      const result = await installStatusLineBridge({
+        homeDir,
+        pluginRoot: secondRoot,
+        pluginData: dataDir
+      });
+
+      const secondSettings = JSON.parse(await readFile(settingsPath, 'utf8'));
+      assert.equal(secondSettings.statusLine.command, firstCommand);
+      assert.equal(result.bridgeRefreshed, true);
+
+      const bridge = JSON.parse(
+        await readFile(path.join(dataDir, 'statusline-bridge.json'), 'utf8')
+      );
+      assert.equal(bridge.pluginRoot, secondRoot);
+      assert.equal(bridge.previousStatusLine, null);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('statusLine runner uses latest installed cache version without rerunning setup', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  try {
+    const dataDir = path.join(homeDir, '.claude', 'plugins', 'data', 'subagent-cap');
+    const cacheRoot = path.join(homeDir, '.claude', 'plugins', 'cache', 'subagent-tools', 'subagent-cap');
+    const firstRoot = path.join(cacheRoot, '0.5.18');
+    const secondRoot = path.join(cacheRoot, '0.5.19');
+
+    await mkdir(path.join(firstRoot, 'bin'), { recursive: true });
+    await mkdir(path.join(secondRoot, 'bin'), { recursive: true });
+    await writeFile(
+      path.join(firstRoot, 'bin', 'statusline.js'),
+      "process.stdout.write('old-version\\n');\n"
+    );
+    await writeFile(
+      path.join(secondRoot, 'bin', 'statusline.js'),
+      "process.stdout.write('new-version\\n');\n"
+    );
+
+    await installStatusLineBridge({
+      homeDir,
+      pluginRoot: firstRoot,
+      pluginData: dataDir
+    });
+
+    const output = await execNodeWithInput(
+      [path.join(dataDir, 'statusline-runner.js'), '--data', dataDir],
+      JSON.stringify({ session_id: 'runner-session' })
+    );
+
+    assert.equal(output.code, 0);
+    assert.equal(output.stdout.trim(), 'new-version');
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
 });
 
 test('installStatusLineBridge applies setup config and removes obsolete options', async () => {
@@ -2027,6 +2104,7 @@ test('setup CLI applies friendly preset choices', async () => {
     assert.match(stdout, /Preset: Strict/);
     assert.match(stdout, /Subagents at once: 1/);
     assert.match(stdout, /Verified session token cap: 250,000/);
+    assert.match(stdout, /Bridge runner: .*statusline-runner\.js/);
     assert.match(stdout, /RESTART REQUIRED: fully exit and reopen Claude Code/i);
     assert.match(stdout, /Then send one normal message before relying on \/sub-agent-view/i);
   } finally {
