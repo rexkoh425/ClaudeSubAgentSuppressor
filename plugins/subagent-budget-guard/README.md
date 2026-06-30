@@ -40,7 +40,7 @@ Then restart Claude Code.
 
 The plugin intentionally keeps the Claude Code surface to two slash entries:
 
-- `/subagent-cap:init` configures setup, presets, and individual setting changes.
+- `/subagent-cap:init` configures setup, presets, and selected setting changes.
 - `/sub-agent-view` shows saved subagent usage after or during a session.
 
 There is no separate slash command per setting. When you need to change one
@@ -96,18 +96,22 @@ subagent-cap init --preset balanced
 subagent-cap init --preset strict
 subagent-cap init --preset observe
 subagent-cap init --set agents=3 --set warn-at=75
-subagent-cap init --preset balanced --set token-limit=750000
+subagent-cap init --preset balanced --set session-token-cap=750000
 ```
 
 Friendly names map to the stable internal config keys, so existing installs and
 saved settings remain compatible.
+
+The session token cap is verified only after each subagent completes and reports
+`Agent.totalTokens`. It is not an individual running subagent limit and cannot
+stop a subagent mid-run.
 
 ## Configuration
 
 | Key | Before init | Recommended | Meaning |
 | --- | ---: | ---: | --- |
 | `max_concurrent_subagents` | `0` | `2` | Maximum active or starting subagents at once. `0` blocks all subagent launches. |
-| `max_subagent_tokens_per_session` | `0` | `500000` | Verified-token cap for completed subagents. `0` means no token cap. |
+| `max_subagent_tokens_per_session` | `0` | `500000` | Verified session token cap for completed subagents. `0` means no token cap. |
 | `subagent_token_warning_threshold_percent` | `80` | `80` | At this percentage of the token cap, Claude is told to stop using subagents and later subagent launches are blocked. |
 | `session_five_hour_budget_percent` | `10` | `10` | Percentage points the session may consume after the statusLine bridge records a baseline. In default mode this only blocks new subagents. |
 | `absolute_five_hour_ceiling_percent` | `90` | `90` | Absolute 5-hour usage ceiling. In default mode this only blocks new subagents. |

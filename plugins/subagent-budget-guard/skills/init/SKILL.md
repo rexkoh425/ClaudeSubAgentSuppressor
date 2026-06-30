@@ -26,7 +26,7 @@ Preset values:
 ```text
 Balanced
   Subagents at once: 2
-  Token limit: 500000
+  Verified session token cap: 500000
   Warning at: 80%
   5-hour budget: 10 percentage points
   5-hour ceiling: 90%
@@ -34,7 +34,7 @@ Balanced
 
 Strict
   Subagents at once: 1
-  Token limit: 250000
+  Verified session token cap: 250000
   Warning at: 70%
   5-hour budget: 5 percentage points
   5-hour ceiling: 85%
@@ -42,7 +42,7 @@ Strict
 
 Observe Only
   Subagents at once: 2
-  Token limit: 500000
+  Verified session token cap: 500000
   Warning at: 80%
   5-hour budget: 10 percentage points
   5-hour ceiling: 90%
@@ -73,7 +73,7 @@ If they choose Custom, ask for these plain-English values. A blank answer means
 use the Balanced value:
 
 - Subagents at once.
-- Token limit.
+- Verified session token cap.
 - Warning at percent.
 - 5-hour budget percentage points.
 - 5-hour ceiling percent.
@@ -86,7 +86,7 @@ Then run one command using `--preset balanced` plus `--set` for values they chan
 node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
   --preset balanced \
   --set agents=<value> \
-  --set token-limit=<value> \
+  --set session-token-cap=<value> \
   --set warn-at=<value> \
   --set five-hour-budget=<value> \
   --set five-hour-ceiling=<value> \
@@ -100,7 +100,7 @@ setting. Then run one command using only the changed values:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
   --set agents=<value> \
-  --set token-limit=<value> \
+  --set session-token-cap=<value> \
   --set warn-at=<value> \
   --set five-hour-budget=<value> \
   --set five-hour-ceiling=<value> \
@@ -109,6 +109,10 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/subagent-cap.js" init \
 ```
 
 Omit unchanged `--set` entries.
+
+The verified session token cap is checked from completed `Agent.totalTokens`
+after each subagent finishes. It is not an individual running subagent limit and
+cannot stop a subagent mid-run.
 
 ## After Setup
 

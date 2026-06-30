@@ -136,7 +136,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped for scoped enforcement mode', async () => {
-  const expectedVersion = '0.5.12';
+  const expectedVersion = '0.5.13';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -172,6 +172,8 @@ test('plugin exposes init skill plus sub-agent-view command', async () => {
   assert.match(text, /Balanced/);
   assert.match(text, /Strict/);
   assert.match(text, /Observe Only/);
+  assert.match(text, /Verified session token cap/);
+  assert.match(text, /not an individual running subagent limit/i);
   assert.match(text, /Do not add more slash commands/i);
 
   const commandPath = path.resolve('plugins/subagent-budget-guard/commands/sub-agent-view.md');
@@ -1883,7 +1885,7 @@ test('setup CLI applies friendly preset choices', async () => {
     assert.equal(options.enforcement_enabled, true);
     assert.match(stdout, /Preset: Strict/);
     assert.match(stdout, /Subagents at once: 1/);
-    assert.match(stdout, /Token limit: 250,000/);
+    assert.match(stdout, /Verified session token cap: 250,000/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });
@@ -1922,6 +1924,8 @@ test('setup CLI friendly set aliases preserve existing settings', async () => {
         '--set',
         'agents=3',
         '--set',
+        'session-token-cap=800000',
+        '--set',
         'warn-at=75',
         '--set',
         'mode=observe'
@@ -1945,7 +1949,7 @@ test('setup CLI friendly set aliases preserve existing settings', async () => {
       settings.pluginConfigs['subagent-cap@subagent-tools'].options;
 
     assert.equal(options.max_concurrent_subagents, 3);
-    assert.equal(options.max_subagent_tokens_per_session, 750000);
+    assert.equal(options.max_subagent_tokens_per_session, 800000);
     assert.equal(options.subagent_token_warning_threshold_percent, 75);
     assert.equal(options.session_five_hour_budget_percent, 10);
     assert.equal(options.absolute_five_hour_ceiling_percent, 90);
@@ -1953,8 +1957,40 @@ test('setup CLI friendly set aliases preserve existing settings', async () => {
     assert.equal(options.enforcement_enabled, true);
     assert.match(stdout, /Preset: Current settings/);
     assert.match(stdout, /Subagents at once: 3/);
+    assert.match(stdout, /Verified session token cap: 800,000/);
     assert.match(stdout, /Warning at: 75%/);
     assert.doesNotMatch(stdout, /max_concurrent_subagents=/);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('setup CLI rejects individual token-limit alias', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  try {
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
+          '--set',
+          'token-limit=500000'
+        ],
+        {
+          cwd: path.resolve('.'),
+          env: {
+            ...process.env,
+            USERPROFILE: homeDir,
+            HOME: homeDir,
+            CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+            CLAUDE_PLUGIN_DATA: dataDir
+          }
+        }
+      ),
+      /Unknown setting "token-limit"/
+    );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });
