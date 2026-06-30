@@ -25,9 +25,11 @@ const SETTING_ALIASES = Object.freeze({
   'warn-at': 'subagent_token_warning_threshold_percent',
   warning: 'subagent_token_warning_threshold_percent',
   'warning-threshold': 'subagent_token_warning_threshold_percent',
+  'five-hour-warning': 'five_hour_warning_threshold_percent',
+  'warning-gate': 'five_hour_warning_threshold_percent',
+  'budget-warning': 'five_hour_warning_threshold_percent',
   'five-hour-budget': 'session_five_hour_budget_percent',
   budget: 'session_five_hour_budget_percent',
-  'session-budget': 'session_five_hour_budget_percent',
   'five-hour-ceiling': 'absolute_five_hour_ceiling_percent',
   ceiling: 'absolute_five_hour_ceiling_percent',
   mode: 'enforcement_mode',
@@ -49,6 +51,7 @@ const PRESETS = Object.freeze({
       max_concurrent_subagents: 1,
       max_subagent_tokens_per_session: 250000,
       subagent_token_warning_threshold_percent: 70,
+      five_hour_warning_threshold_percent: 70,
       session_five_hour_budget_percent: 5,
       absolute_five_hour_ceiling_percent: 85,
       enforcement_mode: 'subagent_only',
@@ -67,21 +70,23 @@ const PRESETS = Object.freeze({
 
 function usage() {
   return [
-    'Usage: subagent-cap init [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]',
+    'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]',
     '',
     'Friendly settings:',
     '  agents              subagents at once',
     '  session-token-cap   verified completed-subagent token cap for the session',
     '  warn-at             warning threshold percent',
+    '  five-hour-warning   5-hour usage percent that blocks new subagents until extended',
     '  five-hour-budget    5-hour budget points for this session',
     '  five-hour-ceiling   absolute 5-hour percentage ceiling',
-    '  mode                subagent_only, session_budget, or observe',
+    '  mode                subagent_only or observe',
     '  enabled             true or false',
     '',
     'Examples:',
-    '  subagent-cap init --preset balanced',
-    '  subagent-cap init --set agents=3 --set warn-at=75',
-    '  subagent-cap init --preset balanced --set session-token-cap=750000',
+    '  setup --preset balanced',
+    '  setup --set agents=3 --set warn-at=75',
+    '  setup --extend-five-hour 2',
+    '  setup --preset balanced --set session-token-cap=750000',
     '',
     'Internal config keys still work with --config:',
     ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
@@ -134,7 +139,8 @@ function parseArgs(args) {
     defaults: false,
     preset: null,
     configOverrides: {},
-    setOverrides: {}
+    setOverrides: {},
+    extendFiveHour: null
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -168,6 +174,17 @@ function parseArgs(args) {
       const [key, value] = parseSettingPair(pair);
       options.setOverrides[key] = value;
       index += 1;
+      continue;
+    }
+    if (arg === '--extend-five-hour') {
+      const next = args[index + 1];
+      const value = next && !next.startsWith('--') ? next : '2';
+      options.extendFiveHour = value;
+      if (next && !next.startsWith('--')) index += 1;
+      continue;
+    }
+    if (arg.startsWith('--extend-five-hour=')) {
+      options.extendFiveHour = arg.slice('--extend-five-hour='.length) || '2';
       continue;
     }
     if (arg.startsWith('--set=')) {
@@ -229,7 +246,6 @@ function formatNumber(value) {
 
 function modeLabel(mode) {
   if (mode === 'subagent_only') return 'Only limit subagents';
-  if (mode === 'session_budget') return 'Strict session budget';
   if (mode === 'observe') return 'Observe only';
   return mode;
 }
@@ -241,6 +257,7 @@ function friendlyConfigLines(config, presetLabel) {
     `  Subagents at once: ${formatNumber(config.max_concurrent_subagents)}`,
     `  Verified session token cap: ${formatNumber(config.max_subagent_tokens_per_session)}`,
     `  Warning at: ${formatNumber(config.subagent_token_warning_threshold_percent)}%`,
+    `  5-hour warning gate: ${formatNumber(config.five_hour_warning_threshold_percent)}%`,
     `  5-hour budget: ${formatNumber(config.session_five_hour_budget_percent)} percentage points`,
     `  5-hour ceiling: ${formatNumber(config.absolute_five_hour_ceiling_percent)}%`,
     `  Mode: ${modeLabel(config.enforcement_mode)}`,
@@ -273,6 +290,7 @@ async function promptForConfig(defaults, { askMode = true } = {}) {
       ['agents', 'Subagents at once'],
       ['session-token-cap', 'Verified session token cap'],
       ['warn-at', 'Warning threshold percent'],
+      ['five-hour-warning', '5-hour warning gate percent'],
       ['five-hour-budget', '5-hour budget percentage points'],
       ['five-hour-ceiling', '5-hour ceiling percent'],
       ['mode', 'Budget mode'],
@@ -299,7 +317,17 @@ function buildNonInteractiveSetup(options, env = process.env) {
   let base;
   let label;
 
-  if (options.preset) {
+  if (options.extendFiveHour !== null) {
+    base = loadConfig(env);
+    const extension = Math.max(0, Number(options.extendFiveHour || 2));
+    const nextWarning = Math.min(100, base.five_hour_warning_threshold_percent + extension);
+    const nextBudget = Math.min(100, base.session_five_hour_budget_percent + extension);
+    const nextCeiling = Math.min(100, base.absolute_five_hour_ceiling_percent + extension);
+    options.setOverrides.five_hour_warning_threshold_percent = String(nextWarning);
+    options.setOverrides.session_five_hour_budget_percent = String(nextBudget);
+    options.setOverrides.absolute_five_hour_ceiling_percent = String(nextCeiling);
+    label = `Extended Current (+${formatNumber(extension)}%)`;
+  } else if (options.preset) {
     const preset = presetForName(options.preset);
     base = preset.config;
     label = preset.label;

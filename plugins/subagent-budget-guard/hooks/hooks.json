@@ -113,54 +113,6 @@
           }
         ]
       }
-    ],
-    "TaskCreated": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
-              "task-created"
-            ],
-            "timeout": 10,
-            "statusMessage": "Checking agent-team budget"
-          }
-        ]
-      }
-    ],
-    "TaskCompleted": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
-              "task-completed"
-            ],
-            "timeout": 10,
-            "statusMessage": "Recording agent-team completion"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
-              "user-prompt-submit"
-            ],
-            "timeout": 10,
-            "statusMessage": "Checking 5-hour budget"
-          }
-        ]
-      }
     ]
   }
 }

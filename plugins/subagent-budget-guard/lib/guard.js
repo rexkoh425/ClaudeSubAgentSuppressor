@@ -25,8 +25,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   max_concurrent_subagents: 0,
   max_subagent_tokens_per_session: 0,
   subagent_token_warning_threshold_percent: 80,
+  five_hour_warning_threshold_percent: 75,
   session_five_hour_budget_percent: 10,
-  absolute_five_hour_ceiling_percent: 90,
+  absolute_five_hour_ceiling_percent: 85,
   enforcement_mode: 'subagent_only',
   enforcement_enabled: true
 });
@@ -40,7 +41,6 @@ export const SETUP_CONFIG = Object.freeze({
 export const CONFIG_KEYS = Object.freeze(Object.keys(DEFAULT_CONFIG));
 export const ENFORCEMENT_MODES = Object.freeze([
   'subagent_only',
-  'session_budget',
   'observe'
 ]);
 export const REMOVED_CONFIG_KEYS = Object.freeze([
@@ -148,6 +148,10 @@ function normalizeConfig(config) {
     100,
     config.session_five_hour_budget_percent
   );
+  config.five_hour_warning_threshold_percent = Math.min(
+    100,
+    Math.max(1, config.five_hour_warning_threshold_percent)
+  );
   config.absolute_five_hour_ceiling_percent = Math.min(
     100,
     config.absolute_five_hour_ceiling_percent
@@ -162,10 +166,6 @@ function normalizeConfig(config) {
 
 function subagentEnforcementEnabled(config) {
   return config.enforcement_enabled && config.enforcement_mode !== 'observe';
-}
-
-function sessionBudgetEnforcementEnabled(config) {
-  return config.enforcement_enabled && config.enforcement_mode === 'session_budget';
 }
 
 export function loadConfig(env = process.env) {
@@ -225,6 +225,10 @@ function initialState(sessionId) {
     updatedAt: nowIso(),
     transcriptPath: null,
     cwd: null,
+    runtime: {
+      effortLevel: null,
+      thinkingEnabled: null
+    },
     subagents: {
       requested: 0,
       allowed: 0,
@@ -247,13 +251,6 @@ function initialState(sessionId) {
       queueNotices: 0,
       queue: [],
       runs: []
-    },
-    agentTeam: {
-      created: 0,
-      completed: 0,
-      denied: 0,
-      active: 0,
-      tasks: []
     },
     rateLimits: {
       fiveHour: {
@@ -319,13 +316,13 @@ function normalizeState(state, sessionId) {
   const fresh = initialState(sessionId);
   state.transcriptPath = state.transcriptPath || fresh.transcriptPath;
   state.cwd = state.cwd || fresh.cwd;
+  state.runtime = { ...fresh.runtime, ...(state.runtime || {}) };
   state.subagents = { ...fresh.subagents, ...(state.subagents || {}) };
   state.subagents.launchReservations = Array.isArray(state.subagents.launchReservations)
     ? state.subagents.launchReservations
     : [];
   state.subagents.launching = state.subagents.launchReservations.length;
   syncQueueItems(state);
-  state.agentTeam = { ...fresh.agentTeam, ...(state.agentTeam || {}) };
   state.rateLimits = {
     ...fresh.rateLimits,
     ...(state.rateLimits || {}),
@@ -354,6 +351,13 @@ async function updateState(sessionId, env, updater) {
 function rememberSessionContext(state, input = {}) {
   if (input.transcript_path) state.transcriptPath = input.transcript_path;
   if (input.cwd) state.cwd = input.cwd;
+  const effortLevel = input?.effort?.level || input?.effort_level || input?.runtime?.effortLevel;
+  if (effortLevel) state.runtime.effortLevel = String(effortLevel);
+  const thinkingEnabled =
+    input?.thinking?.enabled ?? input?.thinking_enabled ?? input?.runtime?.thinkingEnabled;
+  if (thinkingEnabled !== undefined && thinkingEnabled !== null) {
+    state.runtime.thinkingEnabled = asBoolean(thinkingEnabled, Boolean(thinkingEnabled));
+  }
 }
 
 function pushEvent(state, event) {
@@ -427,28 +431,43 @@ export async function updateRateLimitFromStatusLine(input, env = process.env) {
   });
 }
 
-function fiveHourBudgetDecision(state, config, { scope = 'subagent' } = {}) {
+function fiveHourBudgetDecisionDetails(state, config) {
   const fiveHour = state.rateLimits.fiveHour;
   const latest = fiveHour.latestUsedPercentage;
   const baseline = fiveHour.baselineUsedPercentage;
-  const enabled =
-    scope === 'session'
-      ? sessionBudgetEnforcementEnabled(config)
-      : subagentEnforcementEnabled(config);
-
-  if (!enabled) return null;
+  if (!subagentEnforcementEnabled(config)) return null;
   if (latest === null || baseline === null) return null;
 
   if (latest >= config.absolute_five_hour_ceiling_percent) {
-    return `5-hour usage ${latest.toFixed(1)}% reached the absolute ceiling ${config.absolute_five_hour_ceiling_percent}%.`;
+    return {
+      severity: 'ceiling',
+      queueable: false,
+      reason: `5-hour usage ${latest.toFixed(1)}% reached the absolute ceiling ${config.absolute_five_hour_ceiling_percent}%.`
+    };
+  }
+
+  if (latest >= config.five_hour_warning_threshold_percent) {
+    return {
+      severity: 'warning',
+      queueable: true,
+      reason: `5-hour usage ${latest.toFixed(1)}% reached the warning threshold ${config.five_hour_warning_threshold_percent}%. Ask the user to extend the subagent budget before launching more subagents.`
+    };
   }
 
   const consumed = latest - baseline;
   if (consumed >= config.session_five_hour_budget_percent) {
-    return `5-hour budget exhausted: this session used ${consumed.toFixed(1)} percentage points since baseline ${baseline.toFixed(1)}%, limit ${config.session_five_hour_budget_percent}%.`;
+    return {
+      severity: 'session_slice',
+      queueable: true,
+      reason: `5-hour budget exhausted: this session used ${consumed.toFixed(1)} percentage points since baseline ${baseline.toFixed(1)}%, limit ${config.session_five_hour_budget_percent}%. Ask the user to extend the subagent budget before launching more subagents.`
+    };
   }
 
   return null;
+}
+
+function fiveHourBudgetDecision(state, config) {
+  return fiveHourBudgetDecisionDetails(state, config)?.reason || null;
 }
 
 function formatCount(value) {
@@ -524,6 +543,25 @@ function syncQueueItems(state) {
     item.dispatchLeaseAt = item.dispatchLeaseAt || null;
     item.dispatchHookEventName = item.dispatchHookEventName || null;
   }
+}
+
+function activateBudgetBlockedQueueItems(state, config) {
+  const decision = fiveHourBudgetDecisionDetails(state, config);
+  if (decision) return false;
+
+  let activated = false;
+  for (const item of state.subagents.queue) {
+    if (item.status !== 'budget_blocked') continue;
+    item.status = 'queued';
+    item.reason = 'Five-hour budget was extended; queued subagent can launch when concurrency is available.';
+    activated = true;
+    pushEvent(state, {
+      type: 'agent-queue-budget-unblocked',
+      queueId: item.queueId
+    });
+  }
+  if (activated) sortQueuedAgents(state);
+  return activated;
 }
 
 function syncLaunchReservationCount(state) {
@@ -625,7 +663,7 @@ function releaseLaunchReservation(state, input = {}, { fallbackToOldest = true }
   return reservation;
 }
 
-function queueConcurrencyDeniedAgent(state, input, reason) {
+function queueConcurrencyDeniedAgent(state, input, reason, { status = 'queued' } = {}) {
   syncQueueItems(state);
   const fingerprint = agentFingerprint(input);
   const existingIndex = findQueuedAgentIndex(state, fingerprint);
@@ -638,7 +676,7 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
     existing.attempts += 1;
     existing.lastQueuedAt = nowIso();
     if (existing.status !== 'dispatching') {
-      existing.status = 'queued';
+      existing.status = status;
     }
     existing.priority = Math.max(existing.priority || 0, agentQueuePriority(input));
     existing.reason = reason;
@@ -657,7 +695,7 @@ function queueConcurrencyDeniedAgent(state, input, reason) {
     queueId,
     fingerprint,
     toolName: subagentToolName(input),
-    status: 'queued',
+    status,
     priority: agentQueuePriority(input),
     attempts: 1,
     queuedAt: nowIso(),
@@ -741,6 +779,7 @@ function activeDispatchQueuedAgent(state) {
 }
 
 function canRetryQueuedAgent(state, config) {
+  activateBudgetBlockedQueueItems(state, config);
   return (
     subagentEnforcementEnabled(config) &&
     config.max_concurrent_subagents > 0 &&
@@ -818,6 +857,7 @@ async function buildQueuedAgentNotice(sessionId, env, hookEventName, options = {
   await updateState(sessionId, env, (state) => {
     pruneStaleLaunchReservations(state);
     pruneExpiredQueueDispatches(state);
+    activateBudgetBlockedQueueItems(state, config);
     if (!canRetryQueuedAgent(state, config)) return state;
 
     const item = nextQueuedAgent(state);
@@ -888,9 +928,13 @@ function subagentTokenBudgetDecision(state, config, { includeWarning = true } = 
 function agentDenyDecision(state, config) {
   if (!subagentEnforcementEnabled(config)) return null;
 
-  const budgetReason = fiveHourBudgetDecision(state, config);
-  if (budgetReason) {
-    return { reason: budgetReason, queueable: false };
+  const budgetDecision = fiveHourBudgetDecisionDetails(state, config);
+  if (budgetDecision) {
+    return {
+      reason: budgetDecision.reason,
+      queueable: budgetDecision.queueable,
+      queueStatus: budgetDecision.queueable ? 'budget_blocked' : null
+    };
   }
 
   const tokenBudgetReason = subagentTokenBudgetDecision(state, config);
@@ -980,7 +1024,9 @@ export async function handlePreToolUseAgent(input, env = process.env) {
     if (decision) {
       state.subagents.denied += 1;
       if (decision.queueable) {
-        queuedItem = queueConcurrencyDeniedAgent(state, input, reason);
+        queuedItem = queueConcurrencyDeniedAgent(state, input, reason, {
+          status: decision.queueStatus || 'queued'
+        });
         reason = `${reason} Queue id: ${queuedItem.queueId}.`;
       }
       pushEvent(state, {
@@ -990,6 +1036,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
         subagentType: input?.tool_input?.subagent_type || null
       });
     } else {
+      activateBudgetBlockedQueueItems(state, config);
       const queuedBeforeLaunch = nextQueuedAgent(state);
       if (
         subagentEnforcementEnabled(config) &&
@@ -1177,100 +1224,6 @@ export async function handleSubagentStop(input, env = process.env) {
 
   const notice = await buildQueuedAgentNotice(sessionId, env, 'SubagentStop');
   return notice || { exitCode: 0, stdout: null, stderr: '' };
-}
-
-function taskDenyReason(state, config) {
-  if (!sessionBudgetEnforcementEnabled(config)) return null;
-
-  const budgetReason = fiveHourBudgetDecision(state, config, { scope: 'session' });
-  if (budgetReason) return budgetReason;
-
-  return null;
-}
-
-export async function handleTaskCreated(input, env = process.env) {
-  const sessionId = input?.session_id || 'unknown-session';
-  const config = loadConfig(env);
-  let reason = null;
-
-  await updateState(sessionId, env, (state) => {
-    reason = taskDenyReason(state, config);
-    if (reason) {
-      state.agentTeam.denied += 1;
-      pushEvent(state, {
-        type: 'task-denied',
-        taskId: input?.task_id || null,
-        reason
-      });
-    } else {
-      state.agentTeam.created += 1;
-      state.agentTeam.active += 1;
-      state.agentTeam.tasks.push({
-        taskId: input?.task_id || null,
-        subject: input?.task_subject || null,
-        description: input?.task_description || null,
-        createdAt: nowIso(),
-        completedAt: null
-      });
-      pushEvent(state, {
-        type: 'task-created',
-        taskId: input?.task_id || null,
-        subject: input?.task_subject || null
-      });
-    }
-    return state;
-  });
-
-  if (reason) {
-    return { exitCode: 2, stdout: null, stderr: reason };
-  }
-
-  return { exitCode: 0, stdout: null, stderr: '' };
-}
-
-export async function handleTaskCompleted(input, env = process.env) {
-  const sessionId = input?.session_id || 'unknown-session';
-
-  await updateState(sessionId, env, (state) => {
-    state.agentTeam.completed += 1;
-    state.agentTeam.active = Math.max(0, state.agentTeam.active - 1);
-    const task = state.agentTeam.tasks.find((item) => item.taskId === input?.task_id);
-    if (task) task.completedAt = nowIso();
-    pushEvent(state, {
-      type: 'task-completed',
-      taskId: input?.task_id || null,
-      subject: input?.task_subject || null
-    });
-    return state;
-  });
-
-  return { exitCode: 0, stdout: null, stderr: '' };
-}
-
-export async function handleUserPromptSubmit(input, env = process.env) {
-  const sessionId = input?.session_id || 'unknown-session';
-  const config = loadConfig(env);
-  const state = await readState(sessionId, env);
-  const reason = fiveHourBudgetDecision(state, config, { scope: 'session' });
-
-  if (!reason) {
-    return { exitCode: 0, stdout: null, stderr: '' };
-  }
-
-  await updateState(sessionId, env, (nextState) => {
-    pushEvent(nextState, { type: 'prompt-denied', reason });
-    return nextState;
-  });
-
-  return {
-    exitCode: 0,
-    stdout: {
-      decision: 'block',
-      reason,
-      suppressOriginalPrompt: true
-    },
-    stderr: ''
-  };
 }
 
 function xmlValue(text, tag) {
@@ -1515,33 +1468,6 @@ export async function buildReport(sessionId, env = process.env) {
   };
 }
 
-export function formatReport(report) {
-  const { state, config, summary } = report;
-  const fiveHour = state.rateLimits.fiveHour;
-  const lines = [
-    `Subagent Cap report for ${report.sessionId}`,
-    `Enforcement: ${config.enforcement_enabled ? 'enabled' : 'disabled'} (${config.enforcement_mode})`,
-    `Subagents: allowed ${state.subagents.allowed}, denied ${state.subagents.denied}, active ${state.subagents.active}, lifecycle starts ${state.subagents.lifecycleStarted}, lifecycle stops ${state.subagents.lifecycleStopped}`,
-    `Verified usage: ${summary.verifiedTokenLabel}, ${state.subagents.totalToolUseCount} subagent tool calls, ${state.subagents.totalDurationMs} ms`,
-    `Subagent token budget: ${summary.subagentTokenBudget}`,
-    `Background launches: ${state.subagents.backgroundLaunched} lifecycle-counted, token totals pending`,
-    `Agent-team tasks: created ${state.agentTeam.created}, denied ${state.agentTeam.denied}, completed ${state.agentTeam.completed}`,
-    `5-hour budget: ${summary.fiveHourBudget}`
-  ];
-
-  if (fiveHour.latestUsedPercentage !== null) {
-    lines.push(
-      `5-hour latest: ${fiveHour.latestUsedPercentage.toFixed(1)}%, baseline ${fiveHour.baselineUsedPercentage.toFixed(1)}%, resets_at ${fiveHour.resetsAt ?? 'unknown'}`
-    );
-  } else {
-    lines.push(
-      '5-hour latest: unavailable. Run /subagent-cap:init so the statusLine bridge can capture rate_limits.five_hour.used_percentage.'
-    );
-  }
-
-  return lines.join('\n');
-}
-
 function formatDuration(ms) {
   const value = Number(ms || 0);
   if (value >= 1000) return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s`;
@@ -1552,15 +1478,35 @@ export function formatSubagentView(report) {
   const runs = report.state.subagents.runs;
   const queued = report.state.subagents.queue || [];
   const fiveHour = report.state.rateLimits.fiveHour;
+  const budgetBlocked = queued.filter((item) => item.status === 'budget_blocked');
+  const fiveHourUsage =
+    fiveHour.latestUsedPercentage === null
+      ? 'unknown'
+      : `${fiveHour.latestUsedPercentage.toFixed(1)}% (warning ${report.config.five_hour_warning_threshold_percent}%, ceiling ${report.config.absolute_five_hour_ceiling_percent}%)`;
+  const hasThinkingEnabled =
+    report.state.runtime?.thinkingEnabled !== null &&
+    report.state.runtime?.thinkingEnabled !== undefined;
+  const hasThinkingMetadata =
+    Boolean(report.state.runtime?.effortLevel) || hasThinkingEnabled;
   const lines = [
     `Sub-agent view for ${report.sessionId}`,
     `Spawned subagents: ${runs.length}`,
     `Queued subagents: ${queued.length}`,
+    `Budget-blocked subagents: ${budgetBlocked.length}`,
     `Verified tokens: ${formatCount(report.state.subagents.verifiedTokens)}`,
     `Total duration: ${formatDuration(report.state.subagents.totalDurationMs)}`,
     `Configured concurrency: ${report.config.max_concurrent_subagents}`,
-    `5-hour bridge: ${fiveHour.bridgeSeen ? 'observed' : 'not observed yet'}`
+    `5-hour bridge: ${fiveHour.bridgeSeen ? 'observed' : 'not observed yet'}`,
+    `5-hour usage: ${fiveHourUsage}`,
+    'Tokens are verified after subagents complete; running subagents show pending until Claude emits completion usage.'
   ];
+  if (hasThinkingMetadata) {
+    lines.splice(
+      lines.length - 1,
+      0,
+      `Thinking level: ${report.state.runtime?.effortLevel || 'unknown'}${hasThinkingEnabled ? `, thinking ${report.state.runtime.thinkingEnabled ? 'enabled' : 'disabled'}` : ''}`
+    );
+  }
 
   if (runs.length === 0 && queued.length === 0) {
     if (!report.sessionFound) {
@@ -1576,7 +1522,7 @@ export function formatSubagentView(report) {
       'Run at least one subagent after the plugin is loaded, or pass --session <session-id> to inspect a specific saved session.'
     );
     lines.push(
-      'If this still happens after restart and after running subagents, run subagent-cap doctor --live because Claude Code is not sending matching hook events to the plugin.'
+      'If this still happens after restart and after running subagents, run /subagent-cap:init again to re-apply setup; Claude Code is not sending matching Agent/Task hook events to this plugin session.'
     );
     if (report.recentSessions?.length) {
       lines.push(
@@ -1602,6 +1548,7 @@ export function formatSubagentView(report) {
     lines.push('Queued:');
     for (const item of queued) {
       lines.push(`- ${item.queueId} ${queuedAgentSummary(item)}`);
+      lines.push(`  status: ${item.status || 'queued'}`);
       lines.push(`  priority: ${Number(item.priority || 0)}, attempts: ${Number(item.attempts || 0)}`);
       lines.push(`  queued_at: ${item.queuedAt || 'unknown'}`);
     }

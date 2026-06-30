@@ -8,22 +8,10 @@ function argValue(name) {
 }
 
 async function main() {
-  const asJson = process.argv.includes('--json');
   const sessionId = argValue('--session');
   const report = await buildReport(sessionId, process.env);
-  const view = {
-    plugin: report.plugin,
-    sessionId: report.sessionId,
-    spawnedSubagents: report.state.subagents.runs.length,
-    verifiedTokens: report.state.subagents.verifiedTokens,
-    totalDurationMs: report.state.subagents.totalDurationMs,
-    queuedSubagents: report.state.subagents.queue || [],
-    subagents: report.state.subagents.runs
-  };
 
-  process.stdout.write(
-    asJson ? `${JSON.stringify(view, null, 2)}\n` : `${formatSubagentView(report)}\n`
-  );
+  process.stdout.write(`${formatSubagentView(report)}\n`);
 }
 
 main().catch((error) => {
