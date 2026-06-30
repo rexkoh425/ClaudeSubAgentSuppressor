@@ -164,7 +164,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.23';
+  const expectedVersion = '0.5.24';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -260,6 +260,12 @@ test('setup help and docs avoid unsupported individual token limit controls', as
   assert.doesNotMatch(stdout, /session_budget/);
   assert.doesNotMatch(rootReadme, /session_budget/);
   assert.doesNotMatch(packageReadme, /session_budget/);
+  assert.match(rootReadme, /\/plugin update subagent-cap@subagent-tools/);
+  assert.match(packageReadme, /\/plugin update subagent-cap@subagent-tools/);
+  assert.doesNotMatch(rootReadme, /\bclaude plugin (marketplace add|install|update) subagent-cap@subagent-tools/);
+  assert.doesNotMatch(packageReadme, /\bclaude plugin (marketplace add|install|update) subagent-cap@subagent-tools/);
+  assert.doesNotMatch(rootReadme, /\bclaude plugin marketplace add rexkoh425\/ClaudeSubAgentSuppressor/);
+  assert.doesNotMatch(packageReadme, /\bclaude plugin marketplace add rexkoh425\/ClaudeSubAgentSuppressor/);
 });
 
 test('setup CLI keeps raw config help behind explicit internal help', async () => {

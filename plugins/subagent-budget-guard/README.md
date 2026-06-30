@@ -32,8 +32,8 @@ fresh session JSON. After that, use:
 
 For an existing install:
 
-```bash
-claude plugin update subagent-cap@subagent-tools
+```text
+/plugin update subagent-cap@subagent-tools
 ```
 
 Then restart Claude Code.
@@ -241,12 +241,12 @@ Code process may not attach those hooks until restart. The plugin does not
 restart Claude Code automatically because that would interrupt the active
 conversation.
 
-If `claude plugin update subagent-cap@subagent-tools` says the plugin is not
+If `/plugin update subagent-cap@subagent-tools` says the plugin is not
 found, add the marketplace first:
 
-```bash
-claude plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
-claude plugin install subagent-cap@subagent-tools
+```text
+/plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
+/plugin install subagent-cap@subagent-tools
 ```
 
 If subagents are all blocked, check `max_concurrent_subagents`. A value of `0`
