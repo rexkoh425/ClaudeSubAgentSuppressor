@@ -1,52 +1,58 @@
 # Subagent Cap
 
-Claude Code plugin that guards subagent usage, records verified subagent tokens, and enforces a session budget against Claude Code's 5-hour usage percentage.
+Subagent Cap is a Claude Code plugin that limits subagent concurrency, records
+verified subagent usage, and provides a post-session view of how many subagents
+ran, how many tokens they used, and how long they took.
 
-## Install
+The default mode is intentionally narrow: it only controls Claude Code `Agent`
+tool launches. Normal prompts, shell commands, file edits, and other Claude Code
+tools continue normally.
 
-Recommended Claude Code install:
+## Quick Install
+
+Inside Claude Code:
 
 ```text
 /plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
 /plugin install subagent-cap@subagent-tools
 /subagent-cap:init
+```
+
+After init, fully exit and reopen Claude Code. The restart lets Claude Code load
+the updated hooks and statusLine bridge from `settings.json`.
+
+Then send one normal message in the new session so the statusLine bridge can see
+fresh session JSON. After that, use:
+
+```text
 /sub-agent-view
 ```
 
-After `/subagent-cap:init`, fully exit and reopen Claude Code so the statusLine bridge from `settings.json` is active. Some Claude Code builds do not provide an in-session plugin reload command.
+For an existing install:
 
-`/sub-agent-view` can be run after a session to display how many subagents were spawned, queued subagents waiting for retry, the verified token total, total duration, and each saved subagent run with its token count, duration, model, and tool-call count.
+```bash
+claude plugin update subagent-cap@subagent-tools
+```
 
-## NPM Package
+Then restart Claude Code.
 
-This package is npm-ready as `@rex_koh/subagent-budget-guard`.
+## NPM Helper CLI
 
-Claude Code plugin discovery is marketplace-based, so npm is mainly useful as a plugin source in a marketplace entry or for installing the helper CLIs:
+Claude Code plugin discovery is marketplace-based. The npm package is also
+useful for the helper commands:
 
 ```bash
 npm install -g @rex_koh/subagent-budget-guard
 subagent-cap doctor --offline
 subagent-cap status
-sub-agent-view
+subagent-cap view
+sub-agent-view --json
 ```
 
-`sub-agent-view` prints the latest session's recorded subagents with per-subagent status, type, description, verified token count, duration, model, tool-call count, and queued retry items. Use `sub-agent-view --session <session-id>` for a specific saved session, or `sub-agent-view --json` for machine-readable output. The same view is also available as the Claude command `/sub-agent-view` and the npm alias `subagent-cap view`.
+## Recommended Defaults
 
-When an `Agent` launch fails only because `max_concurrent_subagents` is already reached, the plugin stores that subagent in a local retry queue with the full original prompt. The default text view does not print full queued prompts. Once active subagents drop below the cap, the plugin injects a reminder for the highest-priority queued item after a tool batch or on the next user prompt so Claude can retry it before lower-priority new work. Hooks cannot autonomously launch a subagent after `SubagentStop`; the queue is surfaced as context for Claude's next action.
-
-Maintainer publish command:
-
-```bash
-npm publish --access public
-```
-
-Offline verification:
-
-```bash
-node bin/verify.js --offline
-```
-
-The plugin is strict before setup: `max_concurrent_subagents` defaults to `0`, so normal subagent launches are blocked unless raised. Run `/subagent-cap:init` to choose defaults or custom values:
+`/subagent-cap:init` writes these values into `~/.claude/settings.json` under
+`pluginConfigs.subagent-cap@subagent-tools.options`:
 
 ```text
 max_concurrent_subagents=2
@@ -58,27 +64,178 @@ enforcement_mode=subagent_only
 enforcement_enabled=true
 ```
 
-For existing installs, setup also removes obsolete `max_subagents_per_session` and `max_agent_team_tasks_per_session` options from this plugin's Claude settings.
+Before init, the plugin is fail-closed for subagents:
+`max_concurrent_subagents=0`. That prevents surprise subagent launches before
+the user chooses a working configuration.
 
-The setup skill can ask for custom values. For direct terminal setup, use:
+## Configuration
 
-```bash
-subagent-cap init
+| Key | Before init | Recommended | Meaning |
+| --- | ---: | ---: | --- |
+| `max_concurrent_subagents` | `0` | `2` | Maximum active or starting subagents at once. `0` blocks all subagent launches. |
+| `max_subagent_tokens_per_session` | `0` | `500000` | Verified-token cap for completed subagents. `0` means no token cap. |
+| `subagent_token_warning_threshold_percent` | `80` | `80` | At this percentage of the token cap, Claude is told to stop using subagents and later subagent launches are blocked. |
+| `session_five_hour_budget_percent` | `10` | `10` | Percentage points the session may consume after the statusLine bridge records a baseline. In default mode this only blocks new subagents. |
+| `absolute_five_hour_ceiling_percent` | `90` | `90` | Absolute 5-hour usage ceiling. In default mode this only blocks new subagents. |
+| `enforcement_mode` | `subagent_only` | `subagent_only` | Scope of blocking behavior. |
+| `enforcement_enabled` | `true` | `true` | Set `false` to record activity without blocking. |
+
+`subagent_only` is the default. It can block or queue only `Agent` tool launches.
+Normal user prompts and task creation are allowed even when the tracked 5-hour
+budget is exhausted.
+
+`session_budget` is stricter. It keeps the subagent limits and also allows the
+plugin to suppress broader prompt/task activity after the configured 5-hour
+budget is exhausted.
+
+`observe` records usage but does not block subagent launches.
+
+## How It Works
+
+Claude Code exposes plugin hook events. Subagent Cap is just a set of local hook
+scripts plus a statusLine bridge. It does not run a background service, install
+an MCP server, or change the Claude model.
+
+The important flow is:
+
+```text
+Claude tries Agent tool
+  -> PreToolUse Agent hook checks local state and config
+  -> allowed, denied, or saved to queue
+
+Subagent starts/stops
+  -> SubagentStart/SubagentStop update active counts
+  -> when capacity opens, queued work can be surfaced once
+
+Agent tool completes
+  -> PostToolUse Agent records verified totalTokens, duration, model, tools
+  -> token warning/cap can block later Agent launches
+
+Tool batch ends
+  -> PostToolBatch may surface one queued subagent if a slot is free
+
+User submits prompt
+  -> in default subagent_only mode this passes through without queue dispatch
+  -> in session_budget mode it may block only if the 5-hour budget is exhausted
 ```
 
-Or pass explicit values:
+The queue is not an autonomous worker. Hooks cannot secretly spawn a subagent.
+When a queued item is ready, the plugin returns a compact
+`SUBAGENT_QUEUE_DISPATCH` context block telling Claude to call the `Agent` tool
+exactly once for that queued item. A dispatch lease prevents repeated reminders
+for the same queued work.
 
-```bash
-subagent-cap init \
-  --config max_concurrent_subagents=2 \
-  --config max_subagent_tokens_per_session=250000 \
-  --config subagent_token_warning_threshold_percent=80 \
-  --config session_five_hour_budget_percent=10 \
-  --config absolute_five_hour_ceiling_percent=90 \
-  --config enforcement_mode=subagent_only \
-  --config enforcement_enabled=true
+## Trust And Safety Model
+
+The hard gate is scoped to `PreToolUse` for the `Agent` tool. That is the only
+place where normal default enforcement denies work.
+
+Default `UserPromptSubmit` behavior is pass-through. This avoids normal prompts
+becoming queue polling, repeated retries, or verbose "thinking around" the
+queue.
+
+The plugin has no runtime npm dependencies and no runtime network calls. It
+writes local state under `CLAUDE_PLUGIN_DATA` and setup updates only this
+plugin's config plus the Claude Code `statusLine` command.
+
+## StatusLine Bridge
+
+Claude Code reports 5-hour usage percentage through statusLine JSON. Subagent
+Cap wraps the user's existing statusLine command, if any, and records:
+
+```text
+rate_limits.five_hour.used_percentage
+rate_limits.five_hour.resets_at
 ```
 
-`max_subagent_tokens_per_session` is enforced from verified `Agent.totalTokens` values after each completed subagent. `subagent_token_warning_threshold_percent` defaults to `80`; once verified subagent usage reaches that percentage, the plugin tells Claude to stop using subagents and blocks future subagent launches. Claude Code does not expose mid-run per-token subagent streaming to hooks, so a single running subagent can only be evaluated when it reports its final token total.
+The first observed percentage becomes the session baseline. Later values are
+compared against that baseline. In default `subagent_only` mode, this budget can
+deny new subagent launches but does not suppress normal prompts.
 
-`enforcement_mode=subagent_only` is the default and only blocks or queues `Agent` launches. Normal prompts and task creation continue even when the tracked 5-hour percentage exceeds the configured budget. Use `enforcement_mode=session_budget` only when you want the plugin to suppress broader session prompts/tasks after the 5-hour budget is exhausted, or `enforcement_mode=observe` to record usage without blocking.
+If an existing statusLine command is present, setup stores it in the plugin data
+directory and calls it through the bridge instead of deleting it.
+
+## Viewing Subagent Usage
+
+Inside Claude Code:
+
+```text
+/sub-agent-view
+```
+
+The view reads saved local state. It can be used after a session; it does not
+need live subagents to still be running.
+
+It shows spawned count, verified tokens, total duration, queued subagents, and
+per-subagent status, type, description, model, tokens, duration, and tool-call
+count.
+
+With the npm helper CLI:
+
+```bash
+subagent-cap view
+sub-agent-view --session <session-id>
+sub-agent-view --json
+```
+
+The default text view does not print full queued prompts. JSON output includes
+the full saved queue payload for debugging.
+
+## Verification
+
+For the npm helper CLI:
+
+```bash
+npm install -g @rex_koh/subagent-budget-guard
+subagent-cap doctor --offline
+```
+
+From a cloned repo:
+
+```bash
+npm test
+npm run verify:offline
+claude plugin validate plugins/subagent-budget-guard --strict
+```
+
+Maintainers can also run:
+
+```bash
+cd plugins/subagent-budget-guard
+npm pack --dry-run
+```
+
+The verifier does not submit Claude prompts. It validates the manifest, hook
+shape, setup behavior, and simulated hook decisions locally.
+
+## Troubleshooting
+
+If `/sub-agent-view` has no data, restart Claude Code after running
+`/subagent-cap:init`, then send one normal message. The statusLine bridge needs a
+fresh session event before the saved-state view has current session data.
+
+If `claude plugin update subagent-cap@subagent-tools` says the plugin is not
+found, add the marketplace first:
+
+```bash
+claude plugin marketplace add rexkoh425/ClaudeSubAgentSuppressor
+claude plugin install subagent-cap@subagent-tools
+```
+
+If subagents are all blocked, check `max_concurrent_subagents`. A value of `0`
+means the plugin is still in fail-closed mode or was configured to block all
+subagents.
+
+If you want the plugin to stop blocking entirely but keep reports:
+
+```bash
+subagent-cap init --config enforcement_mode=observe
+```
+
+If you want broad session-budget blocking, opt in explicitly:
+
+```bash
+subagent-cap init --config enforcement_mode=session_budget
+```
+
+Restart Claude Code after changing plugin config.
