@@ -164,7 +164,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.20';
+  const expectedVersion = '0.5.21';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -2291,8 +2291,9 @@ test('setup CLI rejects unknown friendly setting names', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
   try {
-    await assert.rejects(
-      execFileAsync(
+    let error = null;
+    try {
+      await execFileAsync(
         process.execPath,
         [
           path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
@@ -2309,9 +2310,20 @@ test('setup CLI rejects unknown friendly setting names', async () => {
             CLAUDE_PLUGIN_DATA: dataDir
           }
         }
-      ),
-      /Unknown setting "subagent-speed"/
-    );
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    assert.ok(error, 'setup should reject unknown setting names');
+    const message = `${error.stderr || ''}${error.stdout || ''}${error.message || ''}`;
+    assert.match(message, /Unknown setting "subagent-speed"/);
+    assert.match(message, /Valid settings: agents, session-token-cap, warn-at, five-hour-warning, five-hour-budget, five-hour-ceiling, mode, enabled/);
+    assert.doesNotMatch(message, /subagents-at-once/);
+    assert.doesNotMatch(message, /agent-limit/);
+    assert.doesNotMatch(message, /budget-mode/);
+    assert.doesNotMatch(message, /enforcement-mode/);
+    assert.doesNotMatch(message, /\bat configKeyForSetting\b/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });

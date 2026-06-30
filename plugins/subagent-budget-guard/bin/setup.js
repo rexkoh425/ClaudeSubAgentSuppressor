@@ -15,6 +15,16 @@ import {
 } from '../lib/guard.js';
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS);
+const PRIMARY_SETTING_NAMES = Object.freeze([
+  'agents',
+  'session-token-cap',
+  'warn-at',
+  'five-hour-warning',
+  'five-hour-budget',
+  'five-hour-ceiling',
+  'mode',
+  'enabled'
+]);
 const SETTING_ALIASES = Object.freeze({
   agents: 'max_concurrent_subagents',
   subagents: 'max_concurrent_subagents',
@@ -106,7 +116,7 @@ function configKeyForSetting(name) {
   const alias = SETTING_ALIASES[normalizeSettingName(name)];
   if (alias) return alias;
   throw new Error(
-    `Unknown setting "${name}". Valid settings: ${Object.keys(SETTING_ALIASES).join(', ')}`
+    `Unknown setting "${name}". Valid settings: ${PRIMARY_SETTING_NAMES.join(', ')}`
   );
 }
 
@@ -395,6 +405,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`setup failed: ${error.stack || error.message}\n`);
+  process.stderr.write(`setup failed: ${error.message}\n`);
   process.exitCode = 1;
 });
