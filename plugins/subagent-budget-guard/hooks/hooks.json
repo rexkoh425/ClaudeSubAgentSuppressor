@@ -75,6 +75,36 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
+              "posttool-agent-failure"
+            ],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
+              "posttool-agent-failure"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolBatch": [
       {
         "hooks": [
@@ -84,6 +114,21 @@
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
               "posttool-batch"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/bin/hook.js",
+              "stop"
             ],
             "timeout": 10
           }

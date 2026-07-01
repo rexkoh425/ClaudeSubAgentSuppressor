@@ -11,6 +11,9 @@ import {
   buildReport,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
+  handleStop,
+  handleSubagentStart,
+  handleSubagentStop,
   installStatusLineBridge,
   pathExists,
   updateRateLimitFromStatusLine
@@ -110,7 +113,7 @@ export async function runOfflineVerification({
         entry.source?.package === '@rex_koh/subagent-budget-guard',
         'marketplace npm package mismatch'
       );
-      assert(entry.source?.version === '0.5.26', 'marketplace npm version mismatch');
+      assert(entry.source?.version === '0.5.27', 'marketplace npm version mismatch');
       return marketplacePath;
     });
   } else {
@@ -150,7 +153,9 @@ export async function runOfflineVerification({
     const requiredEvents = [
       'PreToolUse',
       'PostToolUse',
+      'PostToolUseFailure',
       'PostToolBatch',
+      'Stop',
       'SubagentStart',
       'SubagentStop'
     ];
@@ -159,6 +164,14 @@ export async function runOfflineVerification({
     }
     assert(hooks.hooks.PreToolUse[0].matcher === 'Agent', 'PreToolUse must match Agent');
     assert(hooks.hooks.PostToolUse[0].matcher === 'Agent', 'PostToolUse must match Agent');
+    assert(
+      hooks.hooks.PostToolUseFailure[0].matcher === 'Agent',
+      'PostToolUseFailure must match Agent'
+    );
+    assert(
+      hooks.hooks.Stop[0].hooks?.[0]?.args?.includes('stop'),
+      'Stop hook must route to hook.js stop'
+    );
     return hooksPath;
   });
 
@@ -275,6 +288,58 @@ export async function runOfflineVerification({
       const report = await buildReport('offline-five-hour-warning', checkEnv);
       assert(report.state.subagents.queue[0]?.status === 'budget_blocked', 'blocked launch was not saved as budget_blocked');
       return output.stdout.hookSpecificOutput.permissionDecisionReason;
+    });
+  });
+
+  await withCheck(result, 'stop-hook-surfaces-queued-subagent', async () => {
+    return withIsolatedPluginEnv(env, root, async (baseEnv) => {
+      const checkEnv = {
+        ...baseEnv,
+        CLAUDE_PLUGIN_OPTION_max_concurrent_subagents: '1'
+      };
+      await handleSubagentStart(
+        {
+          session_id: 'offline-stop-queue',
+          hook_event_name: 'SubagentStart',
+          agent_id: 'agent-active',
+          agent_type: 'Explore'
+        },
+        checkEnv
+      );
+      await handlePreToolUseAgent(
+        {
+          session_id: 'offline-stop-queue',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Agent',
+          tool_input: {
+            description: 'verify stop queue drain',
+            subagent_type: 'Explore',
+            prompt: 'Run this queued verification once capacity opens.'
+          }
+        },
+        checkEnv
+      );
+      await handleSubagentStop(
+        {
+          session_id: 'offline-stop-queue',
+          hook_event_name: 'SubagentStop',
+          agent_id: 'agent-active',
+          agent_type: 'Explore'
+        },
+        checkEnv
+      );
+      const output = await handleStop(
+        {
+          session_id: 'offline-stop-queue',
+          hook_event_name: 'Stop',
+          stop_hook_active: false
+        },
+        checkEnv
+      );
+      const context = output.stdout?.hookSpecificOutput?.additionalContext || '';
+      assert(/^SUBAGENT_QUEUE_DISPATCH/m.test(context), 'Stop hook did not emit queue dispatch');
+      assert(/verify stop queue drain/.test(context), 'Stop hook dispatch omitted queued description');
+      return 'Stop emitted SUBAGENT_QUEUE_DISPATCH for queued Agent';
     });
   });
 

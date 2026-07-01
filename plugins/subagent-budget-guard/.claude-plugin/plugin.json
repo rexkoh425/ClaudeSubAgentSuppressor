@@ -2,7 +2,7 @@
   "name": "subagent-cap",
   "displayName": "Subagent Cap",
   "description": "Limit subagent launches, record verified subagent usage, and optionally enforce a session budget against Claude Code's 5-hour rate-limit percentage.",
-  "version": "0.5.26",
+  "version": "0.5.27",
   "author": {
     "name": "ClaudeSubAgentSuppressor"
   },

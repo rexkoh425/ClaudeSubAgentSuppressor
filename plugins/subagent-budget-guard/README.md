@@ -138,6 +138,10 @@ Agent/Task tool completes
   -> PostToolUse Agent/Task records verified totalTokens, duration, model, tools
   -> token warning/cap can block later subagent launches
 
+Queued Agent/Task tool launch fails
+  -> PostToolUseFailure Agent/Task returns the queued item to retryable state
+  -> a later dispatch hook can surface it again when capacity and budget allow
+
 5-hour usage reaches warning gate
   -> PreToolUse Agent/Task blocks the new subagent and saves it as budget_blocked
   -> /subagent-cap:init can extend the gate; queued work dispatches only after extension
@@ -147,18 +151,30 @@ Tool batch ends
 
 User prompt or task notification turn starts
   -> UserPromptSubmit may surface one queued subagent if a slot is free
+
+Parent turn is about to finish
+  -> Stop may surface one queued subagent as a final drain opportunity
+  -> Stop skips recursive stop-hook continuations to avoid loops
 ```
 
 The queue is not an autonomous worker. Hooks cannot secretly spawn a subagent.
 When a queued item is ready, the plugin returns a compact
 `SUBAGENT_QUEUE_DISPATCH` context block telling Claude to call the matching
 subagent tool exactly once for that queued item. A dispatch lease prevents
-repeated reminders for the same queued work.
+repeated reminders for the same queued work, and failed queued launches are
+returned to the queue instead of being silently dropped.
 
 ## Trust And Safety Model
 
 The hard gate is scoped to `PreToolUse` for the subagent tool (`Agent` or
 `Task`). That is the only place where normal default enforcement denies work.
+
+The remaining global hooks are used only for lightweight subagent bookkeeping
+and parent-visible queue recovery:
+
+- `SubagentStart` and `SubagentStop` track active lifecycle counts.
+- `PostToolBatch`, `UserPromptSubmit`, or `Stop` can surface one queued subagent after tool activity, task notifications, or before the parent turn finishes.
+- `PostToolUseFailure` can return a failed queued launch to retryable state.
 
 The plugin has no runtime npm dependencies and no runtime network calls. It
 writes local state under `CLAUDE_PLUGIN_DATA` and setup updates only this

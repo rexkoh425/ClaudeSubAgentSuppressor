@@ -627,11 +627,13 @@ function matchingLaunchReservation(state, input) {
   return index === -1 ? null : state.subagents.launchReservations[index];
 }
 
-function reserveLaunchSlot(state, input, queueId = null) {
+function reserveLaunchSlot(state, input, queueRef = null) {
   pruneStaleLaunchReservations(state);
   if (matchingLaunchReservation(state, input)) return null;
 
   const identity = agentIdentity(input);
+  const queueItem = isPlainObject(queueRef) ? queueRef : null;
+  const queueId = queueItem?.queueId || queueRef || null;
   const reservation = {
     fingerprint: agentFingerprint(input),
     reservedAt: nowIso(),
@@ -639,7 +641,12 @@ function reserveLaunchSlot(state, input, queueId = null) {
     toolName: subagentToolName(input),
     toolUseId: input?.tool_use_id || null,
     description: identity.description || null,
-    subagentType: identity.subagentType || null
+    subagentType: identity.subagentType || null,
+    prompt: queueItem?.prompt || identity.prompt || null,
+    priority: Number(queueItem?.priority || agentQueuePriority(input)),
+    attempts: Number(queueItem?.attempts || 1),
+    queuedAt: queueItem?.queuedAt || null,
+    notifyCount: Number(queueItem?.notifyCount || 0)
   };
 
   state.subagents.launchReservations.push(reservation);
@@ -766,6 +773,67 @@ function removeMatchingQueuedAgent(state, input, { dispatchItem = null } = {}) {
   return item;
 }
 
+function queueFailedLaunchReservation(state, reservation, input, reason) {
+  syncQueueItems(state);
+  const fingerprint = reservation?.fingerprint || agentFingerprint(input);
+  const existingIndex = findQueuedAgentIndex(state, fingerprint);
+  if (existingIndex !== -1) {
+    const existing = state.subagents.queue[existingIndex];
+    existing.status = 'queued';
+    existing.attempts = Number(existing.attempts || 0) + 1;
+    existing.lastQueuedAt = nowIso();
+    existing.lastNotifiedWindow = null;
+    existing.dispatchLeaseId = null;
+    existing.dispatchLeaseAt = null;
+    existing.dispatchHookEventName = null;
+    existing.reason = reason;
+    sortQueuedAgents(state);
+    pushEvent(state, {
+      type: 'agent-queue-failed-launch-requeued',
+      queueId: existing.queueId,
+      attempts: existing.attempts,
+      reason
+    });
+    return existing;
+  }
+  if (!reservation?.queueId) return null;
+
+  const identity = agentIdentity(input);
+  const queueId = reservation.queueId;
+  const item = {
+    queueId,
+    fingerprint,
+    toolName: reservation?.toolName || subagentToolName(input),
+    status: 'queued',
+    priority: Number(reservation?.priority || agentQueuePriority(input)),
+    attempts: Number(reservation?.attempts || 1) + 1,
+    queuedAt: reservation?.queuedAt || nowIso(),
+    lastQueuedAt: nowIso(),
+    lastNotifiedAt: null,
+    notifyCount: Number(reservation?.notifyCount || 0),
+    lastNotifiedWindow: null,
+    dispatchLeaseId: null,
+    dispatchLeaseAt: null,
+    dispatchHookEventName: null,
+    reason,
+    description: reservation?.description || identity.description || null,
+    subagentType: reservation?.subagentType || identity.subagentType || null,
+    prompt: reservation?.prompt || identity.prompt || null
+  };
+
+  state.subagents.queue.push(item);
+  sortQueuedAgents(state);
+  pushEvent(state, {
+    type: 'agent-queue-failed-launch-requeued',
+    queueId,
+    attempts: item.attempts,
+    reason,
+    description: item.description,
+    subagentType: item.subagentType
+  });
+  return item;
+}
+
 function nextQueuedAgent(state) {
   pruneExpiredQueueDispatches(state);
   const queued = [...state.subagents.queue].filter((item) => item.status === 'queued');
@@ -808,6 +876,8 @@ function canRetryQueuedAgent(state, config) {
   return (
     subagentEnforcementEnabled(config) &&
     config.max_concurrent_subagents > 0 &&
+    !fiveHourBudgetDecisionDetails(state, config) &&
+    !subagentTokenBudgetDecision(state, config) &&
     occupiedSubagentSlots(state) < config.max_concurrent_subagents &&
     !activeDispatchQueuedAgent(state) &&
     state.subagents.queue.some((item) => item.status === 'queued')
@@ -1092,7 +1162,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
       });
       state.subagents.allowed += 1;
       if (subagentEnforcementEnabled(config) && config.max_concurrent_subagents > 0) {
-        reserveLaunchSlot(state, input, launchedQueuedItem?.queueId || null);
+        reserveLaunchSlot(state, input, launchedQueuedItem || null);
       }
       pushEvent(state, {
         type: 'agent-allowed',
@@ -1209,6 +1279,52 @@ export async function handlePostToolUseAgent(input, env = process.env) {
   return { exitCode: 0, stdout: null, stderr: '' };
 }
 
+function postToolFailureMessage(input) {
+  const response = input?.tool_response || {};
+  return (
+    response.error ||
+    response.message ||
+    response.status ||
+    input?.error ||
+    'unknown failure'
+  );
+}
+
+export async function handlePostToolUseFailureAgent(input, env = process.env) {
+  const sessionId = input?.session_id || 'unknown-session';
+  const failure = postToolFailureMessage(input);
+  const reason = `Queued subagent launch failed: ${failure}. Returned to the queue for a later eligible dispatch.`;
+  let requeuedItem = null;
+
+  await updateState(sessionId, env, (state) => {
+    rememberSessionContext(state, input);
+    const reservation = releaseLaunchReservation(state, input, { fallbackToOldest: false });
+    requeuedItem = queueFailedLaunchReservation(state, reservation, input, reason);
+    return state;
+  });
+
+  if (!requeuedItem) {
+    return { exitCode: 0, stdout: null, stderr: '' };
+  }
+
+  return {
+    exitCode: 0,
+    stdout: {
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUseFailure',
+        additionalContext: [
+          'SUBAGENT_QUEUE_FAILURE_REQUEUED',
+          `Queue id: ${requeuedItem.queueId}`,
+          'The queued subagent launch failed and was returned to the queue.',
+          'Do not answer the queued prompt directly in chat.',
+          'Wait for the next SUBAGENT_QUEUE_DISPATCH block before launching it again.'
+        ].join('\n')
+      }
+    },
+    stderr: ''
+  };
+}
+
 export async function handlePostToolBatch(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const notice = await buildQueuedAgentNotice(sessionId, env, 'PostToolBatch');
@@ -1219,6 +1335,17 @@ export async function handlePostToolBatch(input, env = process.env) {
 export async function handleUserPromptSubmit(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit');
+
+  return notice || { exitCode: 0, stdout: null, stderr: '' };
+}
+
+export async function handleStop(input, env = process.env) {
+  if (input?.stop_hook_active) {
+    return { exitCode: 0, stdout: null, stderr: '' };
+  }
+
+  const sessionId = input?.session_id || 'unknown-session';
+  const notice = await buildQueuedAgentNotice(sessionId, env, 'Stop');
 
   return notice || { exitCode: 0, stdout: null, stderr: '' };
 }

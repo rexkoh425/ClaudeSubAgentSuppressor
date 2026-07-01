@@ -14,8 +14,10 @@ import {
   formatSubagentView,
   getPluginRoot,
   handlePostToolBatch,
+  handlePostToolUseFailureAgent,
   handlePostToolUseAgent,
   handlePreToolUseAgent,
+  handleStop,
   handleSubagentStart,
   handleSubagentStop,
   handleUserPromptSubmit,
@@ -134,17 +136,21 @@ test('hooks match both Agent and Task subagent tool events', async () => {
   const hookEvents = Object.keys(hooks).sort();
   const preToolMatchers = hooks.PreToolUse.map((entry) => entry.matcher).sort();
   const postToolMatchers = hooks.PostToolUse.map((entry) => entry.matcher).sort();
+  const failureMatchers = hooks.PostToolUseFailure.map((entry) => entry.matcher).sort();
 
   assert.deepEqual(hookEvents, [
     'PostToolBatch',
     'PostToolUse',
+    'PostToolUseFailure',
     'PreToolUse',
+    'Stop',
     'SubagentStart',
     'SubagentStop',
     'UserPromptSubmit'
   ]);
   assert.deepEqual(preToolMatchers, ['Agent', 'Task']);
   assert.deepEqual(postToolMatchers, ['Agent', 'Task']);
+  assert.deepEqual(failureMatchers, ['Agent', 'Task']);
 
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
@@ -167,7 +173,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.26';
+  const expectedVersion = '0.5.27';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -962,6 +968,185 @@ test('UserPromptSubmit emits queued prompt after task notification opens capacit
     const report = await buildReport('session-queue-user-prompt-submit', env);
     assert.equal(report.state.subagents.queue[0].status, 'dispatching');
     assert.equal(report.state.subagents.queue[0].dispatchHookEventName, 'UserPromptSubmit');
+  });
+});
+
+test('Stop hook emits one queued dispatch before the parent turn ends', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-stop-queue-drain',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-stop-queue-drain');
+    queuedInput.tool_input.description = 'Queued stop-gate review';
+    queuedInput.tool_input.prompt = 'Run this queued review before the parent turn finishes.';
+    await handlePreToolUseAgent(queuedInput, env);
+    await handleSubagentStop(
+      {
+        session_id: 'session-stop-queue-drain',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const stopNotice = await handleStop(
+      {
+        session_id: 'session-stop-queue-drain',
+        hook_event_name: 'Stop',
+        stop_hook_active: false
+      },
+      env
+    );
+    const duplicateStopNotice = await handleStop(
+      {
+        session_id: 'session-stop-queue-drain',
+        hook_event_name: 'Stop',
+        stop_hook_active: false
+      },
+      env
+    );
+
+    assert.equal(stopNotice.exitCode, 0);
+    assert.match(stopNotice.stdout.hookSpecificOutput.additionalContext, /^SUBAGENT_QUEUE_DISPATCH/m);
+    assert.match(stopNotice.stdout.hookSpecificOutput.additionalContext, /Queued stop-gate review/);
+    assert.match(stopNotice.stdout.hookSpecificOutput.additionalContext, /Run this queued review/);
+    assert.equal(stopNotice.stdout.hookSpecificOutput.hookEventName, 'Stop');
+    assert.equal(duplicateStopNotice.stdout, null);
+
+    const report = await buildReport('session-stop-queue-drain', env);
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
+    assert.equal(report.state.subagents.queue[0].dispatchHookEventName, 'Stop');
+  });
+});
+
+test('Stop hook does not loop when Claude is already handling a Stop hook continuation', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-stop-loop-guard',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-stop-loop-guard');
+    queuedInput.tool_input.description = 'Queued loop guard review';
+    await handlePreToolUseAgent(queuedInput, env);
+    await handleSubagentStop(
+      {
+        session_id: 'session-stop-loop-guard',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const stopNotice = await handleStop(
+      {
+        session_id: 'session-stop-loop-guard',
+        hook_event_name: 'Stop',
+        stop_hook_active: true
+      },
+      env
+    );
+
+    assert.equal(stopNotice.exitCode, 0);
+    assert.equal(stopNotice.stdout, null);
+
+    const report = await buildReport('session-stop-loop-guard', env);
+    assert.equal(report.state.subagents.queue[0].status, 'queued');
+    assert.equal(report.state.subagents.queue[0].notifyCount, 0);
+  });
+});
+
+test('PostToolUseFailure returns a failed queued dispatch to retryable state', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-failure-retry',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-failure-retry');
+    queuedInput.tool_input.description = 'Queued failure retry';
+    queuedInput.tool_input.prompt = 'Retry this queued launch if the first dispatch fails.';
+    await handlePreToolUseAgent(queuedInput, env);
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-failure-retry',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    await handlePostToolBatch(
+      {
+        session_id: 'session-queue-failure-retry',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+    const acceptedQueuedLaunch = await handlePreToolUseAgent(queuedInput, env);
+    assert.equal(acceptedQueuedLaunch.stdout, null);
+
+    const failureNotice = await handlePostToolUseFailureAgent(
+      {
+        ...queuedInput,
+        hook_event_name: 'PostToolUseFailure',
+        tool_response: {
+          status: 'failed',
+          error: 'simulated launch failure'
+        }
+      },
+      env
+    );
+
+    assert.equal(failureNotice.exitCode, 0);
+    assert.match(
+      failureNotice.stdout.hookSpecificOutput.additionalContext,
+      /returned to the queue/i
+    );
+    assert.equal(failureNotice.stdout.hookSpecificOutput.hookEventName, 'PostToolUseFailure');
+
+    let report = await buildReport('session-queue-failure-retry', env);
+    assert.equal(report.state.subagents.queue.length, 1);
+    assert.equal(report.state.subagents.queue[0].status, 'queued');
+    assert.equal(report.state.subagents.queue[0].dispatchLeaseId, null);
+    assert.equal(report.state.subagents.queue[0].dispatchHookEventName, null);
+    assert.equal(report.state.subagents.queue[0].attempts, 2);
+
+    const retryNotice = await handleStop(
+      {
+        session_id: 'session-queue-failure-retry',
+        hook_event_name: 'Stop',
+        stop_hook_active: false
+      },
+      env
+    );
+    assert.match(retryNotice.stdout.hookSpecificOutput.additionalContext, /Queued failure retry/);
+
+    report = await buildReport('session-queue-failure-retry', env);
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
+    assert.equal(report.state.subagents.queue[0].notifyCount, 2);
   });
 });
 
