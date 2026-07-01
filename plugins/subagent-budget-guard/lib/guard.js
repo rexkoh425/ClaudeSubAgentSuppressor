@@ -524,6 +524,28 @@ function findQueuedAgentIndex(state, fingerprint) {
   return state.subagents.queue.findIndex((item) => item.fingerprint === fingerprint);
 }
 
+function queueIdentityText(value) {
+  return normalizeText(value).toLowerCase();
+}
+
+function queuedAgentMatchesInputIdentity(item, input) {
+  const identity = agentIdentity(input);
+  const description = queueIdentityText(identity.description);
+  if (!description) return false;
+
+  return (
+    queueIdentityText(item?.toolName || 'Agent') === queueIdentityText(subagentToolName(input)) &&
+    queueIdentityText(item?.description) === description &&
+    queueIdentityText(item?.subagentType) === queueIdentityText(identity.subagentType)
+  );
+}
+
+function queuedDispatchMatchesInput(item, input) {
+  if (!item) return false;
+  if (item.fingerprint === agentFingerprint(input)) return true;
+  return queuedAgentMatchesInputIdentity(item, input);
+}
+
 function compareQueuedAgents(a, b) {
   const priorityDiff = Number(b.priority || 0) - Number(a.priority || 0);
   if (priorityDiff !== 0) return priorityDiff;
@@ -725,9 +747,12 @@ function queueConcurrencyDeniedAgent(state, input, reason, { status = 'queued' }
   return item;
 }
 
-function removeMatchingQueuedAgent(state, input) {
+function removeMatchingQueuedAgent(state, input, { dispatchItem = null } = {}) {
   syncQueueItems(state);
-  const index = findQueuedAgentIndex(state, agentFingerprint(input));
+  let index = findQueuedAgentIndex(state, agentFingerprint(input));
+  if (index === -1 && dispatchItem && queuedDispatchMatchesInput(dispatchItem, input)) {
+    index = state.subagents.queue.findIndex((item) => item.queueId === dispatchItem.queueId);
+  }
   if (index === -1) return null;
 
   const [item] = state.subagents.queue.splice(index, 1);
@@ -991,7 +1016,7 @@ export async function handlePreToolUseAgent(input, env = process.env) {
 
     const dispatchItem = activeDispatchQueuedAgent(state);
     const inputFingerprint = agentFingerprint(input);
-    const matchesDispatch = dispatchItem?.fingerprint === inputFingerprint;
+    const matchesDispatch = queuedDispatchMatchesInput(dispatchItem, input);
     if (
       subagentEnforcementEnabled(config) &&
       dispatchItem &&
@@ -1062,7 +1087,9 @@ export async function handlePreToolUseAgent(input, env = process.env) {
         return state;
       }
 
-      const launchedQueuedItem = removeMatchingQueuedAgent(state, input);
+      const launchedQueuedItem = removeMatchingQueuedAgent(state, input, {
+        dispatchItem: matchesDispatch ? dispatchItem : null
+      });
       state.subagents.allowed += 1;
       if (subagentEnforcementEnabled(config) && config.max_concurrent_subagents > 0) {
         reserveLaunchSlot(state, input, launchedQueuedItem?.queueId || null);
@@ -1364,10 +1391,6 @@ async function listSessionIdsFromDataDir(dataDir) {
   }
 }
 
-async function listSessionIds(env = process.env) {
-  return listSessionIdsFromDataDir(getDataDir(env));
-}
-
 function addUniquePath(paths, value) {
   if (!value) return;
   const normalized = path.resolve(value);
@@ -1422,11 +1445,6 @@ async function resolveReportSource(sessionId, env = process.env) {
     dataDir: getDataDir(env),
     sessions: []
   };
-}
-
-export async function latestSessionId(env = process.env) {
-  const source = await resolveReportSource(null, env);
-  return source.sessions[0]?.sessionId || null;
 }
 
 export async function buildReport(sessionId, env = process.env) {

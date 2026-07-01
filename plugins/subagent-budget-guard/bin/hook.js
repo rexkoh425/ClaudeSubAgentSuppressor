@@ -47,6 +47,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`subagent-budget-guard hook error: ${error.stack || error.message}\n`);
+  process.stderr.write(`Subagent Cap hook error: ${error.stack || error.message}\n`);
   process.exitCode = 1;
 });

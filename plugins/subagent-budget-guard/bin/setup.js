@@ -78,13 +78,11 @@ const PRESETS = Object.freeze({
   }
 });
 
-function usage({ internal = false } = {}) {
-  const lines = [
-    internal
-      ? 'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive] [--config key=value ...]'
-      : 'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive]',
+function usage() {
+  return [
+    'Usage: setup [--defaults] [--preset balanced|strict|observe] [--set name=value ...] [--interactive]',
     '',
-    'Friendly settings:',
+    'Friendly settings (internal keys also accepted):',
     '  agents              subagents at once',
     '  session-token-cap   verified completed-subagent token cap for the session',
     '  warn-at             warning threshold percent',
@@ -99,15 +97,6 @@ function usage({ internal = false } = {}) {
     '  setup --set agents=3 --set warn-at=75',
     '  setup --extend-five-hour 2',
     '  setup --preset balanced --set session-token-cap=750000'
-  ];
-
-  if (!internal) return lines.join('\n');
-
-  return [
-    ...lines,
-    '',
-    'Internal config keys still work with --config:',
-    ...CONFIG_KEYS.map((key) => `  ${key} (default ${SETUP_CONFIG[key]})`)
   ].join('\n');
 }
 
@@ -128,20 +117,6 @@ function configKeyForSetting(name) {
   );
 }
 
-function parseConfigPair(pair) {
-  const index = pair.indexOf('=');
-  if (index <= 0) {
-    throw new Error(`Invalid --config value "${pair}". Expected key=value.`);
-  }
-
-  const key = pair.slice(0, index);
-  const value = pair.slice(index + 1);
-  if (!CONFIG_KEY_SET.has(key)) {
-    throw new Error(`Unknown config key "${key}". Valid keys: ${CONFIG_KEYS.join(', ')}`);
-  }
-  return [key, value];
-}
-
 function parseSettingPair(pair) {
   const index = pair.indexOf('=');
   if (index <= 0) {
@@ -156,7 +131,6 @@ function parseArgs(args) {
     interactive: false,
     defaults: false,
     preset: null,
-    configOverrides: {},
     setOverrides: {},
     extendFiveHour: null
   };
@@ -165,10 +139,6 @@ function parseArgs(args) {
     const arg = args[index];
     if (arg === '--help' || arg === '-h') {
       process.stdout.write(`${usage()}\n`);
-      process.exit(0);
-    }
-    if (arg === '--help-internal') {
-      process.stdout.write(`${usage({ internal: true })}\n`);
       process.exit(0);
     }
     if (arg === '--interactive') {
@@ -220,19 +190,6 @@ function parseArgs(args) {
       if (!value) throw new Error(`${arg} requires a value`);
       options.setOverrides[key] = value;
       index += 1;
-      continue;
-    }
-    if (arg === '--config') {
-      const pair = args[index + 1];
-      if (!pair) throw new Error('--config requires key=value');
-      const [key, value] = parseConfigPair(pair);
-      options.configOverrides[key] = value;
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('--config=')) {
-      const [key, value] = parseConfigPair(arg.slice('--config='.length));
-      options.configOverrides[key] = value;
       continue;
     }
     throw new Error(`Unknown argument "${arg}".\n${usage()}`);
@@ -356,9 +313,6 @@ function buildNonInteractiveSetup(options, env = process.env) {
   } else if (options.defaults) {
     base = PRESETS.balanced.config;
     label = PRESETS.balanced.label;
-  } else if (Object.keys(options.configOverrides).length > 0) {
-    base = SETUP_CONFIG;
-    label = 'Custom';
   } else if (Object.keys(options.setOverrides).length > 0) {
     const homeDir = getHomeDir(env);
     const hasExisting = hasExistingPluginConfig(homeDir);
@@ -372,7 +326,6 @@ function buildNonInteractiveSetup(options, env = process.env) {
   return {
     config: buildSetupConfig({
       ...base,
-      ...options.configOverrides,
       ...options.setOverrides
     }),
     label
@@ -386,7 +339,6 @@ async function main() {
     ? await promptForConfig(nonInteractive.config, { askMode: false })
     : !options.defaults &&
         !options.preset &&
-        Object.keys(options.configOverrides).length === 0 &&
         Object.keys(options.setOverrides).length === 0 &&
         process.stdin.isTTY
       ? await promptForConfig(nonInteractive.config)

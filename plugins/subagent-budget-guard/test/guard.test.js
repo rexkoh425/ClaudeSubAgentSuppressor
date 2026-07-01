@@ -20,6 +20,7 @@ import {
   handleSubagentStop,
   installStatusLineBridge,
   loadConfig,
+  renderStatusLine,
   updateRateLimitFromStatusLine
 } from '../lib/guard.js';
 
@@ -164,7 +165,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.24';
+  const expectedVersion = '0.5.25';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -266,18 +267,6 @@ test('setup help and docs avoid unsupported individual token limit controls', as
   assert.doesNotMatch(packageReadme, /\bclaude plugin (marketplace add|install|update) subagent-cap@subagent-tools/);
   assert.doesNotMatch(rootReadme, /\bclaude plugin marketplace add rexkoh425\/ClaudeSubAgentSuppressor/);
   assert.doesNotMatch(packageReadme, /\bclaude plugin marketplace add rexkoh425\/ClaudeSubAgentSuppressor/);
-});
-
-test('setup CLI keeps raw config help behind explicit internal help', async () => {
-  const { stdout } = await execFileAsync(process.execPath, [
-    path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
-    '--help-internal'
-  ]);
-
-  assert.match(stdout, /--config key=value/);
-  assert.match(stdout, /Internal config keys/);
-  assert.match(stdout, /max_concurrent_subagents/);
-  assert.match(stdout, /session_five_hour_budget_percent/);
 });
 
 test('hook CLI accepts BOM-prefixed JSON from stdin', async () => {
@@ -975,6 +964,49 @@ test('Queue notice leases exactly one queued agent until that agent launches', a
     assert.equal(report.state.subagents.queue[0].status, 'queued');
     assert.equal(report.state.subagents.queueLaunched, 1);
     assert.equal(report.state.subagents.launching, 1);
+  });
+});
+
+test('Queue dispatch accepts same described subagent when prompt text drifts', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-dispatch-prompt-drift',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-dispatch-prompt-drift');
+    queuedInput.tool_input.description = 'Subagent 3 greeting';
+    queuedInput.tool_input.prompt = 'Say exactly: "hello, i am subagent 3"';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    await handleSubagentStop(
+      {
+        session_id: 'session-queue-dispatch-prompt-drift',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const driftedLaunch = agentInput('session-queue-dispatch-prompt-drift');
+    driftedLaunch.tool_use_id = 'toolu_drifted_subagent_3';
+    driftedLaunch.tool_input.description = 'Subagent 3 greeting';
+    driftedLaunch.tool_input.prompt = 'Say hello as subagent 3.';
+
+    const result = await handlePreToolUseAgent(driftedLaunch, env);
+    const report = await buildReport('session-queue-dispatch-prompt-drift', env);
+
+    assert.equal(result.stdout, null);
+    assert.equal(report.state.subagents.allowed, 1);
+    assert.equal(report.state.subagents.queue.length, 0);
+    assert.equal(report.state.subagents.queueLaunched, 1);
   });
 });
 
@@ -2067,7 +2099,7 @@ test('offline verifier ignores real Claude settings from caller environment', as
   }
 });
 
-test('setup CLI applies custom config values over recommended defaults', async () => {
+test('setup CLI applies internal config keys via --set over recommended defaults', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
   try {
@@ -2075,21 +2107,21 @@ test('setup CLI applies custom config values over recommended defaults', async (
       process.execPath,
       [
         path.resolve('plugins/subagent-budget-guard/bin/setup.js'),
-        '--config',
+        '--set',
         'max_concurrent_subagents=3',
-        '--config',
+        '--set',
         'max_subagent_tokens_per_session=250000',
-        '--config',
+        '--set',
         'subagent_token_warning_threshold_percent=80',
-        '--config',
+        '--set',
         'five_hour_warning_threshold_percent=75',
-        '--config',
+        '--set',
         'session_five_hour_budget_percent=10',
-        '--config',
+        '--set',
         'absolute_five_hour_ceiling_percent=90',
-        '--config',
+        '--set',
         'enforcement_mode=observe',
-        '--config',
+        '--set',
         'enforcement_enabled=false'
       ],
       {
@@ -2446,6 +2478,92 @@ test('setup script writes short plugin config id', async () => {
         .absolute_five_hour_ceiling_percent,
       85
     );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('renderStatusLine emits the SBG guard segment for known and unknown 5-hour usage', async () => {
+  await withTempEnv(async (env, dataDir) => {
+    const statusEnv = { ...env, CLAUDE_PLUGIN_OPTION_max_concurrent_subagents: '2' };
+
+    const unknown = await renderStatusLine(
+      { session_id: 'sl-unknown' },
+      { pluginData: dataDir, env: statusEnv }
+    );
+    assert.match(unknown, /SBG agents 0\/2 \| tokens no verified-token cap \| 5h unknown/);
+
+    const known = await renderStatusLine(
+      {
+        session_id: 'sl-known',
+        rate_limits: { five_hour: { used_percentage: 42.5, resets_at: 1 } }
+      },
+      { pluginData: dataDir, env: statusEnv }
+    );
+    assert.match(known, /SBG agents 0\/2/);
+    assert.match(known, /5h 42\.5%/);
+  });
+});
+
+test('concurrent PreToolUse Agent calls are all recorded under the state lock', async () => {
+  await withTempEnv(async (env) => {
+    const attempts = Array.from({ length: 6 }, (_unused, index) =>
+      handlePreToolUseAgent(
+        {
+          session_id: 'session-concurrent',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Agent',
+          tool_input: {
+            description: `concurrent task ${index}`,
+            subagent_type: 'Explore',
+            prompt: `prompt ${index}`
+          }
+        },
+        env
+      )
+    );
+    const results = await Promise.all(attempts);
+
+    for (const result of results) {
+      assert.equal(result.stdout?.hookSpecificOutput?.permissionDecision, 'deny');
+    }
+
+    const report = await buildReport('session-concurrent', env);
+    assert.equal(report.state.subagents.requested, 6);
+    assert.equal(report.state.subagents.denied, 6);
+  });
+});
+
+test('setup CLI extend-five-hour clamps raised thresholds at 100%', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'sbg-home-'));
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'sbg-data-'));
+  const env = {
+    ...process.env,
+    USERPROFILE: homeDir,
+    HOME: homeDir,
+    CLAUDE_PLUGIN_ROOT: path.resolve('plugins/subagent-budget-guard'),
+    CLAUDE_PLUGIN_DATA: dataDir
+  };
+  const setupPath = path.resolve('plugins/subagent-budget-guard/bin/setup.js');
+  try {
+    await execFileAsync(process.execPath, [setupPath, '--preset', 'balanced'], {
+      cwd: path.resolve('.'),
+      env
+    });
+    await execFileAsync(process.execPath, [setupPath, '--extend-five-hour', '50'], {
+      cwd: path.resolve('.'),
+      env
+    });
+
+    const settings = JSON.parse(
+      await readFile(path.join(homeDir, '.claude', 'settings.json'), 'utf8')
+    );
+    const options = settings.pluginConfigs['subagent-cap@subagent-tools'].options;
+
+    assert.equal(options.five_hour_warning_threshold_percent, 100);
+    assert.equal(options.absolute_five_hour_ceiling_percent, 100);
+    assert.equal(options.session_five_hour_budget_percent, 60);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });
