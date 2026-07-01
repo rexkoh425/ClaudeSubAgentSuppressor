@@ -132,7 +132,7 @@ Claude tries Agent/Task subagent tool
 
 Subagent starts/stops
   -> SubagentStart/SubagentStop update active counts
-  -> when capacity opens, queued work can be surfaced once
+  -> when capacity opens, queued work waits for a parent-visible hook
 
 Agent/Task tool completes
   -> PostToolUse Agent/Task records verified totalTokens, duration, model, tools
@@ -145,8 +145,8 @@ Agent/Task tool completes
 Tool batch ends
   -> PostToolBatch may surface one queued subagent if a slot is free
 
-User submits prompt
-  -> no plugin hook runs
+User prompt or task notification turn starts
+  -> UserPromptSubmit may surface one queued subagent if a slot is free
 ```
 
 The queue is not an autonomous worker. Hooks cannot secretly spawn a subagent.

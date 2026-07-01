@@ -4,7 +4,8 @@ import {
   handlePostToolUseAgent,
   handlePreToolUseAgent,
   handleSubagentStart,
-  handleSubagentStop
+  handleSubagentStop,
+  handleUserPromptSubmit
 } from '../lib/guard.js';
 
 async function readStdin() {
@@ -31,7 +32,8 @@ const handlers = {
   'posttool-batch': handlePostToolBatch,
   'posttool-agent': handlePostToolUseAgent,
   'subagent-start': handleSubagentStart,
-  'subagent-stop': handleSubagentStop
+  'subagent-stop': handleSubagentStop,
+  'user-prompt-submit': handleUserPromptSubmit
 };
 
 async function main() {

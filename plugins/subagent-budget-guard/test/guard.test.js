@@ -18,6 +18,7 @@ import {
   handlePreToolUseAgent,
   handleSubagentStart,
   handleSubagentStop,
+  handleUserPromptSubmit,
   installStatusLineBridge,
   loadConfig,
   renderStatusLine,
@@ -139,7 +140,8 @@ test('hooks match both Agent and Task subagent tool events', async () => {
     'PostToolUse',
     'PreToolUse',
     'SubagentStart',
-    'SubagentStop'
+    'SubagentStop',
+    'UserPromptSubmit'
   ]);
   assert.deepEqual(preToolMatchers, ['Agent', 'Task']);
   assert.deepEqual(postToolMatchers, ['Agent', 'Task']);
@@ -165,7 +167,7 @@ test('marketplace exposes the subagent-cap install name', async () => {
 });
 
 test('release metadata is bumped consistently', async () => {
-  const expectedVersion = '0.5.25';
+  const expectedVersion = '0.5.26';
   const rootPackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
   const pluginPackage = JSON.parse(
     await readFile(path.resolve('plugins/subagent-budget-guard/package.json'), 'utf8')
@@ -801,7 +803,7 @@ test('PostToolBatch injects highest-priority queued subagent when capacity is av
   });
 });
 
-test('SubagentStop immediately surfaces queued work when capacity opens', async () => {
+test('SubagentStop leaves queued work for parent-visible PostToolBatch', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
     await handleSubagentStart(
@@ -819,7 +821,7 @@ test('SubagentStop immediately surfaces queued work when capacity opens', async 
     queuedInput.tool_input.prompt = 'Run this reliability review once capacity opens.';
     await handlePreToolUseAgent(queuedInput, env);
 
-    const result = await handleSubagentStop(
+    const stopResult = await handleSubagentStop(
       {
         session_id: 'session-queue-stop-notice',
         hook_event_name: 'SubagentStop',
@@ -829,20 +831,35 @@ test('SubagentStop immediately surfaces queued work when capacity opens', async 
       env
     );
 
-    assert.equal(result.exitCode, 0);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to launch/);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Queued reliability review/);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Run this reliability review/);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
-    assert.match(result.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
-    assert.doesNotMatch(result.stdout.hookSpecificOutput.additionalContext, /retry|automatically/i);
+    assert.equal(stopResult.exitCode, 0);
+    assert.equal(stopResult.stdout, null);
 
-    const report = await buildReport('session-queue-stop-notice', env);
+    let report = await buildReport('session-queue-stop-notice', env);
+    assert.equal(report.state.subagents.queue[0].status, 'queued');
+    assert.equal(report.state.subagents.queue[0].notifyCount, 0);
+
+    const batchResult = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-stop-notice',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.equal(batchResult.exitCode, 0);
+    assert.match(batchResult.stdout.hookSpecificOutput.additionalContext, /Queued subagent ready to launch/);
+    assert.match(batchResult.stdout.hookSpecificOutput.additionalContext, /Queued reliability review/);
+    assert.match(batchResult.stdout.hookSpecificOutput.additionalContext, /Run this reliability review/);
+    assert.match(batchResult.stdout.hookSpecificOutput.additionalContext, /Call the Agent tool/i);
+    assert.match(batchResult.stdout.hookSpecificOutput.additionalContext, /Do not answer/i);
+    assert.doesNotMatch(batchResult.stdout.hookSpecificOutput.additionalContext, /retry|automatically/i);
+
+    report = await buildReport('session-queue-stop-notice', env);
     assert.equal(report.state.subagents.queue[0].notifyCount, 1);
   });
 });
 
-test('PostToolBatch does not repeat a queued prompt after SubagentStop already suggested it', async () => {
+test('PostToolBatch emits a single queued prompt after SubagentStop opens capacity', async () => {
   await withTempEnv(async (env) => {
     env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
     await handleSubagentStart(
@@ -860,12 +877,19 @@ test('PostToolBatch does not repeat a queued prompt after SubagentStop already s
     queuedInput.tool_input.prompt = 'Say exactly: "hello, how are you? I am subagent 2"';
     await handlePreToolUseAgent(queuedInput, env);
 
-    const firstNotice = await handleSubagentStop(
+    const stopResult = await handleSubagentStop(
       {
         session_id: 'session-queue-single-notice',
         hook_event_name: 'SubagentStop',
         agent_id: 'agent-active',
         agent_type: 'Explore'
+      },
+      env
+    );
+    const firstNotice = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-single-notice',
+        hook_event_name: 'PostToolBatch'
       },
       env
     );
@@ -877,12 +901,67 @@ test('PostToolBatch does not repeat a queued prompt after SubagentStop already s
       env
     );
 
+    assert.equal(stopResult.stdout, null);
     assert.match(firstNotice.stdout.hookSpecificOutput.additionalContext, /Subagent 2 greeting/);
     assert.equal(duplicateNotice.exitCode, 0);
     assert.equal(duplicateNotice.stdout, null);
 
     const report = await buildReport('session-queue-single-notice', env);
     assert.equal(report.state.subagents.queue[0].notifyCount, 1);
+  });
+});
+
+test('UserPromptSubmit emits queued prompt after task notification opens capacity', async () => {
+  await withTempEnv(async (env) => {
+    env.CLAUDE_PLUGIN_OPTION_max_concurrent_subagents = '1';
+    await handleSubagentStart(
+      {
+        session_id: 'session-queue-user-prompt-submit',
+        hook_event_name: 'SubagentStart',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+
+    const queuedInput = agentInput('session-queue-user-prompt-submit');
+    queuedInput.tool_input.description = 'Queued notification review';
+    queuedInput.tool_input.prompt = 'Run this from the parent notification turn.';
+    await handlePreToolUseAgent(queuedInput, env);
+
+    const stopResult = await handleSubagentStop(
+      {
+        session_id: 'session-queue-user-prompt-submit',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'agent-active',
+        agent_type: 'Explore'
+      },
+      env
+    );
+    const userPromptNotice = await handleUserPromptSubmit(
+      {
+        session_id: 'session-queue-user-prompt-submit',
+        hook_event_name: 'UserPromptSubmit'
+      },
+      env
+    );
+    const duplicateBatchNotice = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-user-prompt-submit',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
+
+    assert.equal(stopResult.stdout, null);
+    assert.match(userPromptNotice.stdout.hookSpecificOutput.additionalContext, /^SUBAGENT_QUEUE_DISPATCH/m);
+    assert.match(userPromptNotice.stdout.hookSpecificOutput.additionalContext, /Queued notification review/);
+    assert.match(userPromptNotice.stdout.hookSpecificOutput.additionalContext, /Run this from the parent notification turn/);
+    assert.equal(duplicateBatchNotice.stdout, null);
+
+    const report = await buildReport('session-queue-user-prompt-submit', env);
+    assert.equal(report.state.subagents.queue[0].status, 'dispatching');
+    assert.equal(report.state.subagents.queue[0].dispatchHookEventName, 'UserPromptSubmit');
   });
 });
 
@@ -910,12 +989,19 @@ test('Queue notice leases exactly one queued agent until that agent launches', a
     secondQueued.tool_input.prompt = 'Say exactly: "hello, i am subagent 4"';
     await handlePreToolUseAgent(secondQueued, env);
 
-    const firstNotice = await handleSubagentStop(
+    const stopResult = await handleSubagentStop(
       {
         session_id: 'session-queue-dispatch-lease',
         hook_event_name: 'SubagentStop',
         agent_id: 'agent-active',
         agent_type: 'Explore'
+      },
+      env
+    );
+    const firstNotice = await handlePostToolBatch(
+      {
+        session_id: 'session-queue-dispatch-lease',
+        hook_event_name: 'PostToolBatch'
       },
       env
     );
@@ -928,6 +1014,7 @@ test('Queue notice leases exactly one queued agent until that agent launches', a
     );
     const wrongQueuedLaunch = await handlePreToolUseAgent(secondQueued, env);
 
+    assert.equal(stopResult.stdout, null);
     assert.match(
       firstNotice.stdout.hookSpecificOutput.additionalContext,
       /^SUBAGENT_QUEUE_DISPATCH/m
@@ -994,6 +1081,13 @@ test('Queue dispatch accepts same described subagent when prompt text drifts', a
       },
       env
     );
+    await handlePostToolBatch(
+      {
+        session_id: 'session-queue-dispatch-prompt-drift',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
 
     const driftedLaunch = agentInput('session-queue-dispatch-prompt-drift');
     driftedLaunch.tool_use_id = 'toolu_drifted_subagent_3';
@@ -1047,12 +1141,21 @@ test('Five queued subagents dispatch one at a time without repeated queue prompt
 
     for (let nextIndex = 1; nextIndex < inputs.length; nextIndex += 1) {
       const nextNumber = nextIndex + 1;
-      const notice = await handleSubagentStop(
+      const stopResult = await handleSubagentStop(
         {
           session_id: sessionId,
           hook_event_name: 'SubagentStop',
           agent_id: `agent-${nextIndex}`,
           agent_type: 'Explore'
+        },
+        env
+      );
+      assert.equal(stopResult.stdout, null);
+
+      const notice = await handlePostToolBatch(
+        {
+          session_id: sessionId,
+          hook_event_name: 'PostToolBatch'
         },
         env
       );
@@ -1128,6 +1231,13 @@ test('PreToolUse Agent preserves queued order when capacity is available', async
         hook_event_name: 'SubagentStop',
         agent_id: 'agent-active',
         agent_type: 'Explore'
+      },
+      env
+    );
+    await handlePostToolBatch(
+      {
+        session_id: 'session-queue-order',
+        hook_event_name: 'PostToolBatch'
       },
       env
     );
@@ -1456,7 +1566,7 @@ test('Task tool launches are tracked and queued as subagents', async () => {
     assert.equal(report.state.subagents.queue.length, 1);
     assert.equal(report.state.subagents.queue[0].toolName, 'Task');
 
-    const notice = await handleSubagentStop(
+    const stopResult = await handleSubagentStop(
       {
         session_id: 'session-task-tool',
         hook_event_name: 'SubagentStop',
@@ -1465,7 +1575,15 @@ test('Task tool launches are tracked and queued as subagents', async () => {
       },
       env
     );
+    const notice = await handlePostToolBatch(
+      {
+        session_id: 'session-task-tool',
+        hook_event_name: 'PostToolBatch'
+      },
+      env
+    );
 
+    assert.equal(stopResult.stdout, null);
     assert.match(
       notice.stdout.hookSpecificOutput.additionalContext,
       /Call the Task tool exactly once/

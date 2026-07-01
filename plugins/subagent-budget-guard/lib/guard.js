@@ -1216,6 +1216,13 @@ export async function handlePostToolBatch(input, env = process.env) {
   return notice || { exitCode: 0, stdout: null, stderr: '' };
 }
 
+export async function handleUserPromptSubmit(input, env = process.env) {
+  const sessionId = input?.session_id || 'unknown-session';
+  const notice = await buildQueuedAgentNotice(sessionId, env, 'UserPromptSubmit');
+
+  return notice || { exitCode: 0, stdout: null, stderr: '' };
+}
+
 export async function handleSubagentStart(input, env = process.env) {
   const sessionId = input?.session_id || 'unknown-session';
   await updateState(sessionId, env, (state) => {
@@ -1249,8 +1256,7 @@ export async function handleSubagentStop(input, env = process.env) {
     return state;
   });
 
-  const notice = await buildQueuedAgentNotice(sessionId, env, 'SubagentStop');
-  return notice || { exitCode: 0, stdout: null, stderr: '' };
+  return { exitCode: 0, stdout: null, stderr: '' };
 }
 
 function xmlValue(text, tag) {
